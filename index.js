@@ -15,6 +15,12 @@ import fs from "node:fs";
 import path from "node:path";
 import FitParser from "fit-file-parser";
 import {
+  upsertActivity,
+  computeForm,
+  monthlySummary,
+  trendMonthly,
+} from "./db.js";
+import {
   ATHLETE,
   POWER_ZONES,
   HR_ZONES,
@@ -595,18 +601,149 @@ async function analyzeFile(input, outDir) {
   if (summary.power.ftp_estimate == null) delete summary.power.ftp_estimate;
   if (summary.cadence_power == null) delete summary.cadence_power;
 
+  // ---- 5. 训练库：入库 + 注入当日 CTL/ATL/TSB（失败不中断主流程） ----
+  try {
+    upsertActivity(path.basename(input), summary);
+    const form = computeForm(summary.activity.date);
+    if (form) {
+      Object.assign(summary.athlete_context, form);
+      upsertActivity(path.basename(input), summary); // 库中同步含 form 的最终版
+    }
+  } catch (e) {
+    console.error(`警告: 训练库写入失败（不影响本次输出）: ${e.message}`);
+  }
+
   const jsonPath = path.join(outDir, `${base}.summary.json`);
   fs.writeFileSync(jsonPath, JSON.stringify(summary, null, 2));
 
   return { csvPath, jsonPath, summary };
 }
 
+// ---------------- 训练库查询命令 ----------------
+
+/** 逐月训练汇总表（终端打印） */
+function printMonthly(n) {
+  const rows = monthlySummary(n);
+  if (!rows.length) {
+    console.log("训练库为空，先分析若干 FIT 文件再查看。");
+    return;
+  }
+  const pad = (s, w) => String(s ?? "-").padEnd(w);
+  console.log(
+    pad("月份", 9) +
+      pad("TSS", 7) +
+      pad("时长h", 7) +
+      pad("距离km", 9) +
+      pad("次数", 5) +
+      pad("低/中/高%", 14) +
+      "强度类型",
+  );
+  for (const r of rows) {
+    const dist = r.intensity_pct
+      ? `${r.intensity_pct.low}/${r.intensity_pct.mid}/${r.intensity_pct.high}`
+      : "-";
+    console.log(
+      pad(r.month, 9) +
+        pad(r.tss, 7) +
+        pad(r.hours, 7) +
+        pad(r.distance_km, 9) +
+        pad(r.sessions, 5) +
+        pad(dist, 14) +
+        (r.intensity_type ?? "-"),
+    );
+  }
+}
+
+/**
+ * 生成逐月 CTL/ATL/TSB 趋势图：自包含 HTML（内嵌数据 + 原生 SVG，无外部库）。
+ * 柱状为月 TSS，折线为月末 CTL（蓝）/ATL（红）/TSB（绿）。
+ */
+function writeTrendHtml(months, outPath) {
+  const data = trendMonthly().slice(-months);
+  if (!data.length) {
+    console.log("训练库为空，先分析若干 FIT 文件再生成趋势图。");
+    return;
+  }
+  const W = 900,
+    H = 420,
+    PL = 50,
+    PR = 50,
+    PT = 30,
+    PB = 50;
+  const iw = W - PL - PR,
+    ih = H - PT - PB;
+  const maxForm = Math.max(...data.map((d) => Math.max(d.ctl, d.atl)), 10);
+  const minForm = Math.min(...data.map((d) => Math.min(d.tsb, 0)));
+  const maxTss = Math.max(...data.map((d) => d.tss), 1);
+  const x = (i) => PL + (data.length === 1 ? iw / 2 : (i / (data.length - 1)) * iw);
+  const yForm = (v) => PT + ((maxForm - v) / (maxForm - minForm)) * ih;
+  const yTss = (v) => PT + ih - (v / maxTss) * ih;
+  const line = (key, color) =>
+    `<polyline fill="none" stroke="${color}" stroke-width="2" points="${data
+      .map((d, i) => `${x(i).toFixed(1)},${yForm(d[key]).toFixed(1)}`)
+      .join(" ")}" />`;
+  const bw = Math.min(40, (iw / data.length) * 0.5);
+  const bars = data
+    .map(
+      (d, i) =>
+        `<rect x="${(x(i) - bw / 2).toFixed(1)}" y="${yTss(d.tss).toFixed(1)}" width="${bw.toFixed(1)}" height="${(PT + ih - yTss(d.tss)).toFixed(1)}" fill="#ddd" />`,
+    )
+    .join("");
+  const labels = data
+    .map(
+      (d, i) =>
+        `<text x="${x(i).toFixed(1)}" y="${H - PB + 18}" font-size="11" text-anchor="middle">${d.month}</text>`,
+    )
+    .join("");
+  const zero =
+    minForm < 0
+      ? `<line x1="${PL}" y1="${yForm(0).toFixed(1)}" x2="${W - PR}" y2="${yForm(0).toFixed(1)}" stroke="#999" stroke-dasharray="4" />`
+      : "";
+  const html = `<!doctype html>
+<html lang="zh"><head><meta charset="utf-8"><title>Fitness 趋势（CTL/ATL/TSB）</title></head>
+<body style="font-family:sans-serif;max-width:960px;margin:24px auto">
+<h2>Fitness 趋势（按月）</h2>
+<p>灰柱：月 TSS（右轴）　<span style="color:#1f77b4">━ CTL 体能</span>　<span style="color:#d62728">━ ATL 疲劳</span>　<span style="color:#2ca02c">━ TSB 状态</span></p>
+<svg width="${W}" height="${H}" style="border:1px solid #ccc">
+${bars}${zero}${line("ctl", "#1f77b4")}${line("atl", "#d62728")}${line("tsb", "#2ca02c")}${labels}
+<text x="6" y="${PT + 10}" font-size="11">${maxForm}</text>
+<text x="6" y="${(PT + ih).toFixed(0)}" font-size="11">${minForm}</text>
+<text x="${W - 44}" y="${PT + 10}" font-size="11" fill="#999">${maxTss}</text>
+</svg>
+<table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;margin-top:16px">
+<tr><th>月份</th><th>TSS</th><th>CTL</th><th>ATL</th><th>TSB</th></tr>
+${data.map((d) => `<tr><td>${d.month}</td><td>${d.tss}</td><td>${d.ctl}</td><td>${d.atl}</td><td>${d.tsb}</td></tr>`).join("\n")}
+</table>
+</body></html>`;
+  fs.mkdirSync(path.dirname(outPath), { recursive: true });
+  fs.writeFileSync(outPath, html);
+  console.log("趋势图已生成:", outPath);
+}
+
 // ---------------- 入口：单文件 / 批量 ----------------
 
 async function main() {
   const input = process.argv[2];
+
+  // ---- 训练库查询子命令 ----
+  if (input === "--monthly") {
+    printMonthly(Number(process.argv[3]) || 6);
+    return;
+  }
+  if (input === "--trend") {
+    const months = Number(process.argv[3]) || 12;
+    const out = process.argv[4] || path.resolve("output", "fitness-trend.html");
+    writeTrendHtml(months, out);
+    return;
+  }
+
   if (!input || !fs.existsSync(input)) {
-    console.error("用法: node index.js <输入.fit 或包含 .fit 的目录> [输出目录]");
+    console.error("用法:");
+    console.error("  node index.js <输入.fit 或包含 .fit 的目录> [输出目录]");
+    console.error("  node index.js --monthly [月数=6]              逐月训练汇总");
+    console.error(
+      "  node index.js --trend [月数=12] [输出.html]   生成 CTL/ATL/TSB 趋势图",
+    );
     process.exit(1);
   }
 

@@ -15,6 +15,12 @@ node index.js 你的骑行.fit ./output
 
 # 批量处理：扫描目录顶层所有 .fit，单文件失败不中断
 node index.js ./input ./output
+
+# 逐月训练汇总（基于本地训练库）
+node index.js --monthly [月数=6]
+
+# 生成 CTL/ATL/TSB 逐月趋势图（自包含 HTML）
+node index.js --trend [月数=12] [输出.html]
 ```
 
 > 注意：依赖包是 `fit-file-parser`，**不是** `fit-parser`（同名不相干的包）。
@@ -25,25 +31,29 @@ node index.js ./input ./output
 
 ```js
 export const ATHLETE = {
-  ftp_watts: 119,   // 功能阈值功率（建议每 4-8 周实测更新）
-  max_hr: 195,      // 最大心率
+  ftp_watts: 119, // 功能阈值功率（建议每 4-8 周实测更新）
+  max_hr: 195, // 最大心率
   weight_kg: 60,
 };
 ```
+
+## 训练数据库
+
+每次分析后，summary 会自动写入本地 SQLite 训练库 `./db/fitness.db`（首次运行时自动创建目录、文件与表，无需手动初始化；该目录已在 `.gitignore` 中）。按文件名去重，重复分析同一文件会覆盖更新而不是新增记录。基于库中历史，summary 的 `athlete_context` 会自动附带当日的 `ctl` / `atl` / `tsb` 及中文状态简评，供 AI 判断"这次训练在周期中的位置"。数据库使用 Node 内置 `node:sqlite`（≥22.5），无第三方依赖。
 
 ## 输出说明
 
 ### `xxx.records.csv` — 逐秒时序明细
 
-| 列 | 说明 |
-|---|---|
-| timestamp | ISO 8601 UTC 时间，严格 1 秒网格 |
-| power | 功率（W），设备掉秒留空 |
-| heart_rate | 心率（bpm） |
-| cadence | 踏频（rpm） |
-| altitude | 海拔（m） |
-| speed | 速度（km/h） |
-| distance_m | 累计距离（m） |
+| 列         | 说明                             |
+| ---------- | -------------------------------- |
+| timestamp  | ISO 8601 UTC 时间，严格 1 秒网格 |
+| power      | 功率（W），设备掉秒留空          |
+| heart_rate | 心率（bpm）                      |
+| cadence    | 踏频（rpm）                      |
+| altitude   | 海拔（m）                        |
+| speed      | 速度（km/h）                     |
+| distance_m | 累计距离（m）                    |
 
 ### `xxx.summary.json` — 汇总指标（喂 AI 用）
 
@@ -71,6 +81,8 @@ export const ATHLETE = {
 - 间歇识别：功率 ≥ 105% FTP 的过阈段，短瞬时掉功率合并、< 30s 丢弃
 - 爬坡段提取：30s 窗口局部坡度 ≥ 3%，且段内爬升 ≥ 15m、长度 ≥ 300m
 - 踏频-功率联合分析：仅统计功率 ≥ 75% FTP 的发力时段，低踏频 < 80rpm / 高踏频 > 90rpm
+- CTL = TSS 的 42 天指数加权（慢性负荷/体能）；ATL = TSS 的 7 天指数加权（急性负荷/疲劳）；TSB = CTL − ATL（状态）；缺天按 TSS=0 参与衰减
+- 月度强度分布：低(Z1–Z2)/中(Z3–Z4)/高(Z5–Z7) 时间占比按时长加权；分类规则：低≥75% 且 高>中 → polarized，低>中>高 → pyramidal，其余 → sweet_spot
 
 ## 后续路线图
 
@@ -84,14 +96,14 @@ export const ATHLETE = {
 
 ### P1 — 长期负荷跟踪（科学训练的核心）
 
-- [ ] **训练库**：每次分析后把 `summary.json` 追加进本地数据库（SQLite）或总表 CSV
-- [ ] **CTL / ATL / TSB**：
+- [x] **训练库**：每次分析后把 `summary.json` 写入本地 SQLite 数据库（`./db/fitness.db`，按文件名去重）
+- [x] **CTL / ATL / TSB**：
   - CTL（慢性负荷，体能）= TSS 的 42 天指数加权
   - ATL（急性负荷，疲劳）= TSS 的 7 天指数加权
   - TSB（状态）= CTL − ATL
-- [ ] **把近期 CTL/ATL/TSB 写入 `athlete_context`**，AI 才能判断"这次训练在你的周期里处于什么位置"
-- [ ] **周汇总**：周 TSS、周时长、强度分布（极化/金字塔/甜区占比）
-- [ ] **Fitness 趋势图**：CTL/ATL/TSB 曲线可视化（简单方案：输出 HTML 图表）
+- [x] **把近期 CTL/ATL/TSB 写入 `athlete_context`**，AI 才能判断"这次训练在你的周期里处于什么位置"
+- [x] **月汇总**：月 TSS、月时长、强度分布（极化/金字塔/甜区占比）（`--monthly`，训练频率低故按月而非按周）
+- [x] **Fitness 趋势图**：CTL/ATL/TSB 逐月曲线 + 月 TSS 柱，自包含 HTML（`--trend`）
 
 ### P2 — AI 分析工作流
 
@@ -121,8 +133,9 @@ export const ATHLETE = {
 
 ## 文件清单
 
-| 文件 | 说明 |
-|---|---|
-| `index.js` | 主脚本：解析 + 指标计算 + 输出（单文件/批量） |
-| `settings.js` | 全部可调配置：骑手参数、分区定义、各分析算法阈值 |
+| 文件                   | 说明                                                        |
+| ---------------------- | ----------------------------------------------------------- |
+| `index.js`             | 主脚本：解析 + 指标计算 + 输出（单文件/批量/`--monthly`/`--trend`） |
+| `settings.js`          | 全部可调配置：骑手参数、分区定义、各分析算法阈值            |
+| `db.js`                | 训练库：SQLite 入库/去重、CTL/ATL/TSB 计算、月汇总与趋势数据 |
 | ~~`make_test_fit.py`~~ | （规划中，尚不存在）测试工具：生成合成 FIT 文件用于回归验证 |
