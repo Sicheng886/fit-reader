@@ -25,7 +25,7 @@ node index.js <输入.fit> [输出目录]
 
 # 批量处理：扫描目录顶层所有 .fit（输出默认写到 cwd 的 output/）
 node index.js <目录> [输出目录]
-# 快捷脚本：等同于 node index.js input/ output/
+# 快捷脚本：批量分析 input/ → output/ 并自动重新生成趋势图
 npm run analysis
 
 # 训练库查询（基于 ./db/fitness.db）
