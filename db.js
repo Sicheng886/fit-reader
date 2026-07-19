@@ -5,22 +5,22 @@
  *   - 基于历史 TSS 计算 CTL / ATL / TSB（体能/疲劳/状态）
  *   - 月汇总、趋势数据与提示词上下文查询（recentActivities / recentFormDaily）
  *
- * 数据库文件固定为 ./db/fitness.db，不存在时自动创建。
+ * 数据库文件固定为 ./db/fitness.db（可用环境变量 FIT_DB_PATH 覆盖，供测试隔离），
+ * 不存在时自动创建。
  */
 
 import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-const DB_DIR = path.resolve("db");
-const DB_PATH = path.join(DB_DIR, "fitness.db");
+const DB_PATH = process.env.FIT_DB_PATH || path.resolve("db", "fitness.db");
 
 let _db = null;
 
 /** 懒打开数据库：目录/文件/表不存在时自动创建 */
 function openDb() {
   if (_db) return _db;
-  fs.mkdirSync(DB_DIR, { recursive: true });
+  fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
   _db = new DatabaseSync(DB_PATH);
   _db.exec(`
     CREATE TABLE IF NOT EXISTS activities (
@@ -47,7 +47,7 @@ function openDb() {
 export function upsertActivity(fileName, summary) {
   const db = openDb();
   const a = summary.activity;
-  const p = summary.power;
+  const p = summary.power ?? {}; // 无功率数据的运动（跑步/游泳）没有 power 段
   db.prepare(
     `INSERT INTO activities
        (file_name, date, sport, duration_sec, distance_km, elevation_gain_m,

@@ -13,7 +13,7 @@
 
 - **运行时**：Node.js（已在 v22.20.0 上验证），**ESM（ECMAScript Modules）**（`package.json` 中 `"type": "module"`，源码使用 `import`/`export` 语法），零构建、零转译。
 - **唯一依赖**：`fit-file-parser`（^3.0.2）。⚠️ 注意**不是** `fit-parser`（同名不相干的包）。
-- **关键配置**：`package.json`（`main: index.js`，唯一脚本 `npm test` 是占位符，会直接报错退出）。
+- **关键配置**：`package.json`（`main: index.js`，脚本 `npm test` 运行 node:test 回归测试，`npm run analysis` 批量分析+趋势图）。
 
 ### 命令
 
@@ -27,6 +27,9 @@ node index.js <输入.fit> [输出目录]
 node index.js <目录> [输出目录]
 # 快捷脚本：批量分析 input/ → output/ 并自动重新生成趋势图
 npm run analysis
+
+# 运行回归测试（指标算法单测 + 合成 FIT 端到端，训练库用 FIT_DB_PATH 隔离）
+npm test
 
 # 训练库查询（基于 ./db/fitness.db）
 node index.js --monthly [月数=6]              # 逐月训练汇总
@@ -46,20 +49,20 @@ node index.js input/MAGENE_C506SE_2026-07-17_202219_1273797.fit output/
 
 ### 必须修改的骑手参数
 
-`settings.js` 中的 `ATHLETE` 常量（`ftp_watts` / `max_hr` / `weight_kg`）是所有派生指标准确性的前提，换骑手必须改这里。当前值为 `ftp: 118W, max_hr: 195, weight: 60kg`。功率/心率分区及间歇识别、爬坡提取、踏频分析的算法阈值（`POWER_ZONES` / `HR_ZONES` / `INTERVAL_DETECTION` / `CLIMB_DETECTION` / `CADENCE_ANALYSIS`）也都集中在 `settings.js`。
+`settings.js` 中的 `ATHLETE` 常量（`ftp_watts` / `max_hr` / `weight_kg`）是所有派生指标准确性的前提，换骑手必须改这里。当前值为 `ftp: 118W, max_hr: 195, weight: 60kg`。功率/心率分区及间歇识别、爬坡提取、踏频分析、数据质量的算法阈值（`POWER_ZONES` / `HR_ZONES` / `INTERVAL_DETECTION` / `CLIMB_DETECTION` / `CADENCE_ANALYSIS` / `DATA_QUALITY`）也都集中在 `settings.js`。
 
 ## 代码结构
 
 - `settings.js`：全部可调配置（骑手参数、分区、算法阈值），纯数据、无逻辑。
-- `db.js`：训练库模块。基于 Node 内置 `node:sqlite`（≥22.5，零第三方依赖），数据库固定为 `./db/fitness.db`（懒打开，目录/表不存在时自动创建）；提供 `upsertActivity`（按文件名去重）、`computeForm`（CTL/ATL/TSB 指数加权）、`monthlySummary`（逐月汇总与强度分类）、`trendMonthly`（逐月趋势数据）、`recentFormDaily`（最近 N 天逐日 form 序列）、`recentActivities`（近期训练简明清单，供提示词上下文）。
+- `db.js`：训练库模块。基于 Node 内置 `node:sqlite`（≥22.5，零第三方依赖），数据库默认 `./db/fitness.db`（可用环境变量 `FIT_DB_PATH` 覆盖，供测试隔离；懒打开，目录/表不存在时自动创建）；提供 `upsertActivity`（按文件名去重）、`computeForm`（CTL/ATL/TSB 指数加权）、`monthlySummary`（逐月汇总与强度分类）、`trendMonthly`（逐月趋势数据）、`recentFormDaily`（最近 N 天逐日 form 序列）、`recentActivities`（近期训练简明清单，供提示词上下文）。
 - `prompts.js`：AI 提示词模板库（P2）。`buildMetricGlossary()` 由 settings.js 动态生成指标口径说明；`buildReviewPrompt` / `buildPlanPrompt` / `buildTaperPrompt` / `buildComparePrompt` 四个场景模板拼装完整 Markdown（角色+口径+数据+固化问题清单）；`thinToWeekly()` 把逐日 form 序列抽稀为逐周点。纯函数、无 IO。
 - `index.js`（约 800 行）：主脚本，内部组织为：
 
 | 区块 | 内容 |
 |---|---|
-| 工具函数 | `zoneOf` / `zoneDistribution`（区间分布）、`normalizedPower`（30s 滚动平均的四次方均根，缺口窗口不参与）、`peakAvg`（指定时长最大平均功率，要求窗口连续）、`hrDriftPct`（前后半程效率因子相对变化）、`findPowerGaps`（功率缺失 > 60s 检测）、`elevationGain`（带 1m 阈值去抖的累计爬升）、`avgField` / `maxField`（片段统计） |
+| 工具函数 | `zoneOf` / `zoneDistribution`（区间分布）、`normalizedPower`（30s 滚动平均的四次方均根，缺口窗口不参与）、`peakAvg`（指定时长最大平均功率，要求窗口连续）、`hrDriftPct`（前后半程效率因子相对变化，功率或速度口径）、`findPowerGaps`（功率缺失 > 60s 检测）、`findMissingSpans`（整段记录缺失检测）、`collectDeveloperFields`（非标准字段数值统计）、`elevationGain`（带 1m 阈值去抖的累计爬升）、`avgField` / `maxField`（片段统计）。纯函数均 `export`，供单元测试直接引用；`main()` 仅当作为入口脚本运行时执行 |
 | P0 分析函数 | `estimateFtp`（20min 峰功率 × 0.95 估算 FTP 并给更新建议）、`detectIntervals`（≥105% FTP 过阈段识别 + 间歇组统计）、`detectClimbs`（30s 窗口坡度 ≥3% 的爬坡段提取）、`cadencePowerAnalysis`（发力时段踏频习惯与踏频-功率相关性） |
-| 单文件流程 `analyzeFile()` | ① 解析 FIT（`force: true`, `km/h`, `km`, `mode: "list"`）→ ② 按秒重采样记录（缺口置 `null`）→ ③ 写 CSV → ④ 计算指标（含 P0 分析）→ ⑤ 训练库入库 + `athlete_context` 注入当日 CTL/ATL/TSB（失败仅警告不中断）→ ⑥ 写 summary JSON，返回结果 |
+| 单文件流程 `analyzeFile()` | ① 解析 FIT（`force: true`, `km/h`, `km`, `mode: "list"`；注意解析器会把海拔/爬升缩放成 km，代码统一换回米）→ ② 按秒重采样记录（缺口置 `null`，统计无时间戳丢弃数/缺失秒数）→ ③ 写 CSV → ④ 计算指标（含 P0 分析；跑步附加配速段、游泳解析 length 消息、无功率数据时省略 power 段并切换心率漂移为速度口径）→ ⑤ 训练库入库 + `athlete_context` 注入当日 CTL/ATL/TSB（失败仅警告不中断）→ ⑥ 写 summary JSON，返回结果 |
 | 查询命令 | `printMonthly()`（逐月汇总表）、`writeTrendHtml()`（自包含 HTML 趋势图：月 TSS 柱 + CTL/ATL/TSB 月末折线 + 指标解读脚注，原生 SVG 无外部库） |
 | 提示词命令（P2） | `emitPrompt()`（打印 stdout + 可选写 .md）、`loadSummaryJson()`、`emitPlanPrompt()` / `emitTaperPrompt()`（从训练库取数并调 prompts.js 组装） |
 | 入口 `main()` | `--monthly` / `--trend` → 训练库查询；`--review` / `--plan` / `--taper` / `--compare` → 提示词生成；输入是目录 → 批量模式（逐文件调用 `analyzeFile`，失败不中断）；输入是文件 → 单文件模式并打印 JSON 全文 |
@@ -83,21 +86,23 @@ node index.js input/MAGENE_C506SE_2026-07-17_202219_1273797.fit output/
 
 ## 测试策略
 
-**当前没有任何自动化测试**（`npm test` 是占位符，会报错退出）。验证方式为端到端手动测试：
+**自动化测试已落地**（P3）：`npm test` = `node --test "test/*.test.mjs"`，零新增依赖（Node 内置 node:test）。
 
-1. 用 `input/` 下的真实 FIT 文件跑一遍脚本，确认生成 CSV + JSON 且指标合理；
-2. README 声称曾用"合成 FIT 文件（30 分钟模拟骑行，含 60 秒功率缺失）"做过回归验证，对应的测试工具 `make_test_fit.py` 在 README 中被提及，但**该文件当前不存在于仓库中**。
+- `test/make_test_fit.mjs`：手写 FIT 二进制生成器（文件头/定义消息/数据消息/CRC-16），可生成骑行（含功率缺失/记录缺失/无时间戳坏记录/开发者字段）、跑步、游泳（length 消息）合成文件；也可直接 `node test/make_test_fit.mjs [目录]` 生成样例。
+- `test/unit.test.mjs`：指标算法纯函数单测（NP/peakAvg/分区/爬升去抖/间歇识别/心率漂移/FTP 估算/缺失检测/开发者字段）。
+- `test/e2e.test.mjs`：端到端回归——合成 FIT → `analyzeFile` → 校验 CSV 行数与 summary 指标；训练库通过 `FIT_DB_PATH` 指向临时目录与真实库隔离（**必须在 import index.js 之前设置该环境变量**，db.js 在模块加载时定路径）。
 
-修改指标算法后，至少用 `input/` 中的样例文件重新跑一次端到端验证；涉及训练库的改动还需验证 `--monthly` / `--trend` 与删库自动重建（`rm -rf db` 后重跑分析）。README 路线图的 P3 中列有"单元测试（用合成 FIT 文件）"的待办。
+修改指标算法后：① 跑 `npm test`；② 用 `input/` 下的真实 FIT 文件重跑批量分析做端到端验证；涉及训练库的改动还需验证 `--monthly` / `--trend` 与删库自动重建（`rm -rf db` 后重跑分析）。
 
 ## 已知注意事项
 
-- **README 与实际代码的偏差已修复**：入口文件为 `index.js`，配置在 `settings.js`；`make_test_fit.py` 仍不存在（README 文件清单中已标注为规划中）。
-- README 中包含一份很长的功能路线图（P0–P4），**P0 已全部完成**（批量处理、FTP 自动估算、间歇识别、爬坡段提取、踏频-功率联合分析），**P1 已全部完成**（SQLite 训练库、CTL/ATL/TSB 写入 `athlete_context`、月汇总 `--monthly`、趋势图 `--trend`；因训练频率低，路线图的“周汇总”落地为月汇总），**P2 已全部完成**（提示词模板库 `prompts.js` + 四个提示词命令 `--review`/`--plan`/`--taper`/`--compare`，只生成文本供复制，调 API 属 P4）。实现新功能前先看是否已在路线图中、应归入哪个优先级，完成后勾选对应条目。
+- **README 与实际代码的偏差已修复**：入口文件为 `index.js`，配置在 `settings.js`；README 早期规划的 `make_test_fit.py` 已以 `test/make_test_fit.mjs`（JS 手写 FIT 二进制生成器）落地。
+- README 中包含一份很长的功能路线图（P0–P4），**P0 已全部完成**（批量处理、FTP 自动估算、间歇识别、爬坡段提取、踏频-功率联合分析），**P1 已全部完成**（SQLite 训练库、CTL/ATL/TSB 写入 `athlete_context`、月汇总 `--monthly`、趋势图 `--trend`；因训练频率低，路线图的“周汇总”落地为月汇总），**P2 已全部完成**（提示词模板库 `prompts.js` + 四个提示词命令 `--review`/`--plan`/`--taper`/`--compare`，只生成文本供复制，调 API 属 P4），**P3 已全部完成**（跑步/游泳适配、开发者字段统计、损坏文件缺失计数、`test/` 下合成 FIT 生成器 + node:test 回归测试）。实现新功能前先看是否已在路线图中、应归入哪个优先级，完成后勾选对应条目。
+- **海拔单位隐藏 bug 已修复**（P3 过程中发现）：解析器按 `lengthUnit: "km"` 会把海拔/爬升缩放成 km，此前海拔输出与爬坡检测被压低 1000 倍（MAGENE 海拔恒 0 故从未暴露），现已统一换回米。
 - 没有 CI、没有部署流程——这是一个纯本地脚本项目（git 仅用于本地版本控制）。
 - 项目源码统一使用 ESM（`.js` + `"type": "module"`），`fit-file-parser` 为 CommonJS 包，通过默认导入（`import FitParser from "fit-file-parser"`）由 Node 的 CJS-ESM 互操作处理。
-- FIT 解析已开启 `force: true` 容忍损坏文件，但被跳过的记录数目前不记录（README P3 待办）。
-- 当前只针对**骑行**数据做了指标设计，跑步/游泳适配在路线图 P3。
+- FIT 解析已开启 `force: true` 容忍损坏文件；被跳过的记录通过 `data_quality`（无时间戳丢弃数、时间跨度内缺失秒数）与 `anomalies`（≥10s 整段缺失标注，阈值见 settings.js `DATA_QUALITY.record_gap_sec`）体现。
+- 已支持骑行/跑步/游泳三类：骑行指标最全；跑步为配速/步频/心率体系（无功率段）；游泳为 length 消息统计（趟数/泳池长度/划水/SWOLF）+ 心率。更细的运动类型适配（如公开水域游泳、铁人三项拼接）未做。
 
 ## 安全考虑
 

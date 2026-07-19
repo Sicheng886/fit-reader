@@ -46,6 +46,11 @@ export const CLIMB_DETECTION = {
   smooth_sec: 30, // 坡度计算窗口（秒），用于压海拔噪声
 };
 
+// ============ 数据质量阈值 ============
+export const DATA_QUALITY = {
+  record_gap_sec: 10, // 逐秒网格中连续缺失超过该时长，在 anomalies 中标注（损坏文件被跳过的记录会表现为这种缺口）
+};
+
 // ============ 踏频-功率联合分析阈值 ============
 export const CADENCE_ANALYSIS = {
   power_floor_pct: 0.75, // 只统计功率 ≥ 该比例 × FTP 的"发力时段"（Z3 起步）

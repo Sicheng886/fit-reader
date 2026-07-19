@@ -29,6 +29,9 @@ node index.js --review <xxx.summary.json> [输出.md]   # 单次复盘
 node index.js --plan [周数=8] [输出.md]               # 周期规划（自动带月汇总+CTL走势）
 node index.js --taper <比赛日期> [输出.md]            # 赛前减量
 node index.js --compare <A.summary.json> <B.summary.json> [输出.md]  # 两次训练对比
+
+# 运行回归测试（指标算法单测 + 合成 FIT 端到端）
+npm test
 ```
 
 > 注意：依赖包是 `fit-file-parser`，**不是** `fit-parser`（同名不相干的包）。
@@ -47,7 +50,7 @@ export const ATHLETE = {
 
 ## 训练数据库
 
-每次分析后，summary 会自动写入本地 SQLite 训练库 `./db/fitness.db`（首次运行时自动创建目录、文件与表，无需手动初始化；该目录已在 `.gitignore` 中）。按文件名去重，重复分析同一文件会覆盖更新而不是新增记录。基于库中历史，summary 的 `athlete_context` 会自动附带当日的 `ctl` / `atl` / `tsb` 及中文状态简评，供 AI 判断"这次训练在周期中的位置"。数据库使用 Node 内置 `node:sqlite`（≥22.5），无第三方依赖。
+每次分析后，summary 会自动写入本地 SQLite 训练库 `./db/fitness.db`（首次运行时自动创建目录、文件与表，无需手动初始化；该目录已在 `.gitignore` 中）。按文件名去重，重复分析同一文件会覆盖更新而不是新增记录。基于库中历史，summary 的 `athlete_context` 会自动附带当日的 `ctl` / `atl` / `tsb` 及中文状态简评，供 AI 判断"这次训练在周期中的位置"。数据库使用 Node 内置 `node:sqlite`（≥22.5），无第三方依赖。数据库路径可用环境变量 `FIT_DB_PATH` 覆盖（测试隔离用）。
 
 ## 输出说明
 
@@ -65,17 +68,20 @@ export const ATHLETE = {
 
 ### `xxx.summary.json` — 汇总指标（喂 AI 用）
 
-- `activity`：日期、运动类型、时长、距离、爬升
-- `athlete_context`：骑手参数（后续应加入 CTL/ATL/TSB）
+- `activity`：日期、运动类型（cycling/running/swimming）、时长、距离、爬升
+- `athlete_context`：骑手参数 + 当日 CTL/ATL/TSB 及状态简评
 - `power`：平均/标准化功率（NP）、最大功率、变异指数（VI）、强度因子（IF）、TSS、功体比、峰功率曲线（5s/1min/5min/20min）、FTP 自动估算（20min 峰功率 × 0.95 及更新建议）、Coggan 7 区时间分布
 - `heart_rate`：平均/最大心率、5 区时间分布、心率漂移（有氧解耦 %）
-- `cadence`：平均踏频
+- `cadence`：平均踏频（跑步为步频 spm）
+- `pace`（仅跑步）：平均配速、最快 1 分钟配速（min/km）；lap 级赛段附带平均配速
+- `swim`（仅游泳）：趟数、泳池长度、平均每趟用时、总划水数、平均 SWOLF（秒+划水次数）
+- `developer_fields`：开发者字段统计（第三方码表自定义数值字段的 样本数/均值/最值），无则省略
 - `cadence_power`：踏频-功率联合分析（发力时段的平均踏频、低/高踏频占比、踏频-功率相关系数、发力习惯判读）
 - `climbs`：自动提取的爬坡段（长度/爬升/平均坡度/平均功率），无爬坡时省略
 - `interval_set`：间歇组统计（组数、平均时长/功率/%FTP），仅当识别到 ≥2 个重复工作段时出现
 - `segments`：圈/赛段统计（来自 FIT 中的 lap 消息）+ 自动识别的间歇工作段
-- `anomalies`：功率缺失片段、心率跳变等设备异常标注
-- `data_quality`：功率/心率数据覆盖率
+- `anomalies`：功率缺失片段、整段记录缺失、心率跳变等设备异常标注
+- `data_quality`：功率/心率数据覆盖率、解析记录数、无时间戳丢弃记录数、时间跨度内缺失秒数（损坏文件被跳过的记录会体现为缺失秒数）
 
 ## 已完成的指标算法
 
@@ -84,7 +90,10 @@ export const ATHLETE = {
 - TSS = (时长秒 × NP × IF) / (FTP × 3600) × 100
 - 心率漂移：前后半程 效率因子（功率/心率）的相对变化
 - 功率/心率区间分布、峰功率曲线（要求窗口数据连续）
-- 功率缺失 > 60s 检测、心率跳变（相邻秒差 > 25）检测
+- 功率缺失 > 60s 检测、整段记录缺失 ≥ 10s 检测、心率跳变（相邻秒差 > 25）检测
+- 心率漂移口径：骑行用 功率/心率；跑步等无功率数据时自动切换为 速度/心率
+- 跑步适配：配速（min/km）指标、步频；游泳适配：解析 length 消息（趟数/泳池长度/划水/SWOLF），record 缺距离时用 session 距离兜底
+- 开发者字段：record 中非标准字段按 field_description 命名解析，输出数值统计
 - FTP 自动估算：20 分钟峰功率 × 0.95（无连续 20 分钟窗口时省略）
 - 间歇识别：功率 ≥ 105% FTP 的过阈段，短瞬时掉功率合并、< 30s 丢弃
 - 爬坡段提取：30s 窗口局部坡度 ≥ 3%，且段内爬升 ≥ 15m、长度 ≥ 300m
@@ -124,10 +133,12 @@ export const ATHLETE = {
 
 ### P3 — 数据质量与兼容性
 
-- [ ] **游泳/跑步适配**：当前以骑行为主，跑步需加入配速/步频指标，游泳需处理长度（length）消息
-- [ ] **开发者字段**：解析自定义字段（部分第三方码表的功率计数据在这里）
-- [ ] **损坏文件兜底**：`force: true` 已开启，但需记录被跳过的记录数
-- [ ] **单元测试**：用合成 FIT 文件（参考 `make_test_fit.py` 的思路）做回归测试
+- [x] **游泳/跑步适配**：跑步加入配速（min/km）/步频指标与 lap 级配速，心率漂移自动切换速度口径；游泳解析 length 消息（趟数/泳池长度/划水/SWOLF）
+- [x] **开发者字段**：解析自定义字段（部分第三方码表的功率计数据在这里），输出到 `developer_fields` 数值统计
+- [x] **损坏文件兜底**：`force: true` 已开启，`data_quality` 记录解析记录数/无时间戳丢弃数/缺失秒数，≥10s 的整段缺失在 `anomalies` 标注
+- [x] **单元测试**：`test/` 下手写 FIT 二进制生成器（`make_test_fit.mjs`，README 早期规划中 `make_test_fit.py` 的落地版）+ `node --test` 回归测试（`npm test`）
+
+> 顺手修复的隐藏 bug：解析器按 `lengthUnit: "km"` 会把海拔/爬升缩放成 km，此前海拔输出与爬坡检测被压低 1000 倍（MAGENE 海拔恒 0 故从未暴露），现已统一换回米。
 
 ### P4 — 可选扩展
 
@@ -137,7 +148,7 @@ export const ATHLETE = {
 
 ## 验证状态
 
-脚本已通过端到端测试：合成 FIT 文件（30 分钟模拟骑行，含 60 秒功率缺失）→ CSV + JSON 输出正确，功率缺失被正确标注为异常。
+`npm test` 全部通过：指标算法单元测试 + 合成 FIT 端到端回归（30 分钟模拟骑行含 60 秒功率缺失、损坏文件缺失计数、跑步配速、游泳 length、开发者字段），并定期用 `input/` 下真实码表文件做端到端验证。
 
 ## 文件清单
 
@@ -147,4 +158,6 @@ export const ATHLETE = {
 | `settings.js`          | 全部可调配置：骑手参数、分区定义、各分析算法阈值            |
 | `db.js`                | 训练库：SQLite 入库/去重、CTL/ATL/TSB 计算、月汇总与趋势数据 |
 | `prompts.js`           | AI 提示词模板库：复盘/规划/赛前/对比四种场景的提示词组装    |
-| ~~`make_test_fit.py`~~ | （规划中，尚不存在）测试工具：生成合成 FIT 文件用于回归验证 |
+| `test/make_test_fit.mjs` | 测试工具：手写 FIT 二进制生成器（骑行/跑步/游泳/损坏场景） |
+| `test/unit.test.mjs`   | 指标算法纯函数单元测试（node:test）                          |
+| `test/e2e.test.mjs`    | 端到端回归：合成 FIT → analyzeFile → 校验 CSV + summary      |

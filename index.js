@@ -13,6 +13,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import FitParser from "fit-file-parser";
 import {
   upsertActivity,
@@ -36,17 +37,18 @@ import {
   INTERVAL_DETECTION,
   CLIMB_DETECTION,
   CADENCE_ANALYSIS,
+  DATA_QUALITY,
 } from "./settings.js";
 
 // ---------------- 工具函数 ----------------
 
-function zoneOf(value, zones, base) {
+export function zoneOf(value, zones, base) {
   const r = value / base;
   for (const z of zones) if (r >= z.min && r < z.max) return z.name;
   return null;
 }
 
-function zoneDistribution(values, zones, base) {
+export function zoneDistribution(values, zones, base) {
   const counts = Object.fromEntries(zones.map((z) => [z.name, 0]));
   let total = 0;
   for (const v of values) {
@@ -65,7 +67,7 @@ function zoneDistribution(values, zones, base) {
 }
 
 /** 30s 滚动平均的四次方均根（Normalized Power），要求窗口内数据连续 */
-function normalizedPower(powers) {
+export function normalizedPower(powers) {
   const W = 30;
   if (powers.length < W) return null;
   let sum = 0,
@@ -89,7 +91,7 @@ function normalizedPower(powers) {
 }
 
 /** 指定时长（秒）的最大平均功率，要求窗口内数据连续 */
-function peakAvg(powers, windowSec) {
+export function peakAvg(powers, windowSec) {
   if (powers.length < windowSec) return null;
   let sum = 0,
     valid = 0,
@@ -111,11 +113,12 @@ function peakAvg(powers, windowSec) {
   return best == null ? null : Math.round(best);
 }
 
-/** 心率漂移（有氧解耦）：前后半程 效率因子(功率/心率) 的相对变化，% */
-function hrDriftPct(records) {
+/** 心率漂移（有氧解耦）：前后半程 效率因子(功率或速度/心率) 的相对变化，%。
+ *  骑行用功率；跑步无功率计时传 field="speed" 用速度代替。 */
+export function hrDriftPct(records, field = "power") {
   const half = Math.floor(records.length / 2);
   const ef = (recs) => {
-    const ps = recs.map((r) => r.power).filter((v) => v != null);
+    const ps = recs.map((r) => r[field]).filter((v) => v != null);
     const hs = recs.map((r) => r.heart_rate).filter((v) => v != null);
     if (ps.length < 60 || hs.length < 60) return null;
     const avgP = ps.reduce((a, b) => a + b, 0) / ps.length;
@@ -128,8 +131,92 @@ function hrDriftPct(records) {
   return Math.round(((e1 - e2) / e1) * 1000) / 10;
 }
 
+/** 检测整条记录（所有字段均为 null，即该秒没有任何数据）连续缺失 ≥ minSec 的片段 */
+export function findMissingSpans(records, minSec) {
+  const spans = [];
+  let start = null;
+  for (let i = 0; i < records.length; i++) {
+    const r = records[i];
+    const empty =
+      r.power == null &&
+      r.heart_rate == null &&
+      r.cadence == null &&
+      r.altitude == null &&
+      r.speed == null &&
+      r.distance == null;
+    if (empty) {
+      if (start == null) start = i;
+    } else if (start != null) {
+      if (i - start >= minSec)
+        spans.push({ start: records[start].timestamp, duration_sec: i - start });
+      start = null;
+    }
+  }
+  return spans;
+}
+
+/** FIT record 中的标准字段（白名单），之外的数值字段视为开发者字段 */
+const STANDARD_RECORD_FIELDS = new Set([
+  "timestamp",
+  "power",
+  "heart_rate",
+  "cadence",
+  "altitude",
+  "speed",
+  "distance",
+  "position_lat",
+  "position_long",
+  "elapsed_time",
+  "timer_time",
+  "enhanced_speed",
+  "enhanced_altitude",
+  "fractional_cadence",
+  "temperature",
+  "gps_accuracy",
+  "vertical_speed",
+  "calories",
+  "grade",
+  "resistance",
+  "cycles",
+  "accumulated_power",
+  "left_right_balance",
+  "left_torque_effectiveness",
+  "right_torque_effectiveness",
+  "left_pedal_smoothness",
+  "right_pedal_smoothness",
+  "combined_pedal_smoothness",
+]);
+
+/** 收集 record 里的开发者字段（第三方码表自定义数据），输出数值统计供 AI 参考 */
+export function collectDeveloperFields(rawRecords) {
+  const stats = new Map(); // name -> {count, sum, min, max}
+  for (const r of rawRecords) {
+    for (const [k, v] of Object.entries(r)) {
+      if (STANDARD_RECORD_FIELDS.has(k)) continue;
+      if (typeof v !== "number" || !Number.isFinite(v)) continue;
+      let s = stats.get(k);
+      if (!s) stats.set(k, (s = { count: 0, sum: 0, min: v, max: v }));
+      s.count++;
+      s.sum += v;
+      if (v < s.min) s.min = v;
+      if (v > s.max) s.max = v;
+    }
+  }
+  if (!stats.size) return null;
+  const out = {};
+  for (const [k, s] of stats) {
+    out[k] = {
+      samples: s.count,
+      avg: Math.round((s.sum / s.count) * 100) / 100,
+      min: Math.round(s.min * 100) / 100,
+      max: Math.round(s.max * 100) / 100,
+    };
+  }
+  return out;
+}
+
 /** 检测功率连续缺失 > gapSec 的片段 */
-function findPowerGaps(records, gapSec = 60) {
+export function findPowerGaps(records, gapSec = 60) {
   const gaps = [];
   let start = null;
   for (let i = 0; i < records.length; i++) {
@@ -146,7 +233,7 @@ function findPowerGaps(records, gapSec = 60) {
 }
 
 /** 累计爬升（带 1m 阈值去抖） */
-function elevationGain(alts) {
+export function elevationGain(alts) {
   let gain = 0,
     last = null,
     pending = 0;
@@ -173,7 +260,7 @@ function elevationGain(alts) {
 }
 
 /** 记录片段某字段的平均值（跳过 null），不足 1 个有效值返回 null */
-function avgField(slice, field, digits = 1) {
+export function avgField(slice, field, digits = 1) {
   const v = slice.map((r) => r[field]).filter((x) => x != null);
   if (!v.length) return null;
   const f = Math.pow(10, digits);
@@ -181,13 +268,13 @@ function avgField(slice, field, digits = 1) {
 }
 
 /** 记录片段某字段的最大值（跳过 null） */
-function maxField(slice, field) {
+export function maxField(slice, field) {
   const v = slice.map((r) => r[field]).filter((x) => x != null);
   return v.length ? Math.round(Math.max(...v)) : null;
 }
 
 /** FTP 自动估算：20 分钟峰功率 × 0.95，并与当前配置对比给出建议 */
-function estimateFtp(powers) {
+export function estimateFtp(powers) {
   const peak20 = peakAvg(powers, 1200);
   if (peak20 == null) return null; // 时长不足 20 分钟
   const estimated = Math.round(peak20 * 0.95);
@@ -210,7 +297,7 @@ function estimateFtp(powers) {
  * 低于阈值不超过 merge_gap_sec 视为瞬时掉功率（段内合并）；
  * 时长不足 min_duration_sec 的段丢弃。
  */
-function detectIntervals(records) {
+export function detectIntervals(records) {
   const thr = INTERVAL_DETECTION.threshold_pct * ATHLETE.ftp_watts;
   // 1. 原始过阈段 [startIdx, endIdx]
   const rawSegs = [];
@@ -285,7 +372,7 @@ function detectIntervals(records) {
  * 段需同时满足累计爬升 ≥ min_gain_m 且长度 ≥ min_distance_m。
  * distance/altitude 数据缺口处自然断段。
  */
-function detectClimbs(records) {
+export function detectClimbs(records) {
   const S = CLIMB_DETECTION.smooth_sec;
   const n = records.length;
   // 1. 逐秒前向窗口坡度（%），数据无效或距离不增则为 null
@@ -345,7 +432,7 @@ function detectClimbs(records) {
  * 踏频-功率联合分析：只统计功率 ≥ power_floor_pct × FTP 的"发力时段"，
  * 判断低踏频高扭矩 vs 高踏频的发力习惯，并给出踏频与功率的相关系数。
  */
-function cadencePowerAnalysis(records) {
+export function cadencePowerAnalysis(records) {
   const floor = CADENCE_ANALYSIS.power_floor_pct * ATHLETE.ftp_watts;
   const pts = records.filter(
     (r) => r.power != null && r.power >= floor && r.cadence != null,
@@ -405,7 +492,7 @@ function cadencePowerAnalysis(records) {
 // ---------------- 单文件分析流程 ----------------
 
 /** 解析一个 FIT 文件，输出 CSV + summary JSON，返回 { csvPath, jsonPath, summary } */
-async function analyzeFile(input, outDir) {
+export async function analyzeFile(input, outDir) {
   const content = fs.readFileSync(input);
   const parser = new FitParser({
     force: true,
@@ -418,9 +505,13 @@ async function analyzeFile(input, outDir) {
     parser.parse(content, (err, d) => (err ? reject(err) : resolve(d))),
   );
 
+  const sport = data.sport?.sport || data.sessions?.[0]?.sport || "unknown";
+
   // ---- 1. 整理逐秒记录（重采样到 1s 网格，缺口置 null） ----
-  const raw = (data.records || []).filter((r) => r.timestamp);
+  const allRecords = data.records || [];
+  const raw = allRecords.filter((r) => r.timestamp);
   if (!raw.length) throw new Error("FIT 中没有 record 数据");
+  const droppedNoTs = allRecords.length - raw.length; // 无时间戳被丢弃的记录数
   raw.sort((a, b) => a.timestamp - b.timestamp);
 
   const t0 = Math.floor(raw[0].timestamp.getTime() / 1000);
@@ -436,7 +527,8 @@ async function analyzeFile(input, outDir) {
       power: r?.power ?? null,
       heart_rate: r?.heart_rate ?? null,
       cadence: r?.cadence ?? null,
-      altitude: r?.altitude != null ? Math.round(r.altitude * 10) / 10 : null,
+      // 解析器按 lengthUnit 把海拔缩放成了 km，这里换回米（保留 1 位小数）
+      altitude: r?.altitude != null ? Math.round(r.altitude * 10000) / 10 : null,
       speed: r?.speed != null ? Math.round(r.speed * 100) / 100 : null,
       distance: r?.distance != null ? Math.round(r.distance * 1000) : null, // 米
     });
@@ -494,11 +586,22 @@ async function analyzeFile(input, outDir) {
       : null;
 
   const distances = records.map((r) => r.distance).filter((v) => v != null);
-  const distanceKm = distances.length
+  let distanceKm = distances.length
     ? Math.round(
         ((Math.max(...distances) - Math.min(...distances)) / 1000) * 100,
       ) / 100
     : null;
+  if (distanceKm == null) {
+    // record 里缺距离时的兜底：用 session 汇总距离（泳池游泳常见）
+    const sd = data.sessions?.[0]?.total_distance;
+    if (sd != null)
+      distanceKm = Math.round((sd > 1000 ? sd / 1000 : sd) * 100) / 100;
+  }
+
+  // 记录层面的缺失统计：时间跨度内没有任何数据的秒数
+  // （损坏文件被 force 模式跳过的记录会表现为这种缺口）
+  const expectedSec = t1 - t0 + 1;
+  const missingSec = expectedSec - bySec.size;
 
   // 功率峰曲线
   const peakCurve = {};
@@ -516,6 +619,10 @@ async function analyzeFile(input, outDir) {
   const anomalies = [];
   for (const g of findPowerGaps(records)) {
     anomalies.push(`功率缺失 ${g.duration_sec}s，起始 ${g.start}`);
+  }
+  // 整段记录缺失检测（损坏文件兜底标注）
+  for (const g of findMissingSpans(records, DATA_QUALITY.record_gap_sec)) {
+    anomalies.push(`记录缺失 ${g.duration_sec}s，起始 ${g.start}`);
   }
   // 心率跳变检测（相邻秒差 > 25）
   for (let i = 1; i < records.length; i++) {
@@ -540,11 +647,22 @@ async function analyzeFile(input, outDir) {
         max_power: lap.max_power,
         avg_hr: lap.avg_heart_rate,
         avg_cadence: lap.avg_cadence,
+        // 跑步的 lap 附平均配速（min/km），速度为 km/h
+        ...(sport === "running" && lap.avg_speed
+          ? {
+              avg_pace_min_per_km:
+                Math.round((60 / lap.avg_speed) * 100) / 100,
+            }
+          : {}),
         distance_km:
           lap.total_distance != null
             ? Math.round(lap.total_distance * 100) / 100
             : undefined,
-        elevation_gain_m: lap.total_ascent,
+        // total_ascent 同样被解析器缩放成 km，换回米
+        elevation_gain_m:
+          lap.total_ascent != null
+            ? Math.round(lap.total_ascent * 1000)
+            : undefined,
       };
       Object.keys(s).forEach((k) => s[k] === undefined && delete s[k]);
       return s;
@@ -553,11 +671,58 @@ async function analyzeFile(input, outDir) {
   const intervalResult = detectIntervals(records);
   if (intervalResult) segments.push(...intervalResult.intervals);
 
+  // 跑步：配速指标（无功率计时的核心强度指标），单位 min/km
+  const speeds = records.map((r) => r.speed); // km/h
+  let paceSection;
+  if (sport === "running" && distanceKm) {
+    const bestSpeed1min = peakAvg(speeds, 60);
+    paceSection = {
+      avg_pace_min_per_km:
+        Math.round((durationSec / 60 / distanceKm) * 100) / 100,
+      best_1min_pace_min_per_km:
+        bestSpeed1min != null
+          ? Math.round((60 / bestSpeed1min) * 100) / 100
+          : null,
+    };
+  }
+
+  // 游泳：处理 length 消息（泳池游泳的逐趟数据）
+  let swimSection;
+  const lengths = data.lengths || [];
+  if (sport === "swimming" && lengths.length) {
+    const times = lengths
+      .map((l) => l.total_elapsed_time)
+      .filter((v) => v != null);
+    const strokes = lengths.map((l) => l.total_strokes).filter((v) => v != null);
+    const poolLen = data.sessions?.[0]?.pool_length;
+    const swolfs = lengths
+      .filter((l) => l.total_elapsed_time != null && l.total_strokes != null)
+      .map((l) => l.total_elapsed_time + l.total_strokes);
+    swimSection = {
+      lengths_count: lengths.length,
+      pool_length_m:
+        poolLen != null ? Math.round(poolLen < 1 ? poolLen * 1000 : poolLen) : null,
+      avg_length_time_sec: times.length
+        ? Math.round((times.reduce((a, b) => a + b, 0) / times.length) * 10) / 10
+        : null,
+      total_strokes: strokes.length
+        ? strokes.reduce((a, b) => a + b, 0)
+        : null,
+      avg_swolf: swolfs.length
+        ? Math.round((swolfs.reduce((a, b) => a + b, 0) / swolfs.length) * 10) / 10
+        : null,
+    };
+  }
+
+  // 心率漂移用的效率因子字段：有功率用功率（骑行），否则用速度（跑步）
+  const hasPower = powers.some((v) => v != null);
+  const driftField = hasPower ? "power" : "speed";
+
   // ---- 4. 汇总 JSON ----
   const summary = {
     activity: {
       date: records[0].timestamp.slice(0, 10),
-      sport: data.sport?.sport || data.sessions?.[0]?.sport || "unknown",
+      sport,
       duration_sec: durationSec,
       distance_km: distanceKm,
       elevation_gain_m: elevationGain(alts),
@@ -586,15 +751,24 @@ async function analyzeFile(input, outDir) {
       avg: avg(hrs),
       max: max(hrs),
       zone_distribution_pct: zoneDistribution(hrs, HR_ZONES, ATHLETE.max_hr),
-      hr_drift_pct: hrDriftPct(records),
+      hr_drift_pct: hrDriftPct(records, driftField),
     },
     cadence: { avg: avg(cads) },
-    cadence_power: cadencePowerAnalysis(records),
+    pace: paceSection,
+    swim: swimSection,
+    developer_fields: collectDeveloperFields(raw),
+    // 踏频-功率联合分析是骑行专属口径（阈值按 FTP 设定）
+    cadence_power: sport === "cycling" ? cadencePowerAnalysis(records) : null,
     climbs: detectClimbs(records),
     interval_set: intervalResult?.interval_set,
     segments: segments.length ? segments : undefined,
     anomalies: anomalies.length ? anomalies : undefined,
     data_quality: {
+      record_count: raw.length,
+      ...(droppedNoTs > 0
+        ? { dropped_records_no_timestamp: droppedNoTs }
+        : {}),
+      ...(missingSec > 0 ? { missing_seconds: missingSec } : {}),
       power_coverage_pct: Math.round(
         (powers.filter((v) => v != null).length / durationSec) * 100,
       ),
@@ -609,6 +783,8 @@ async function analyzeFile(input, outDir) {
   }
   if (summary.power.ftp_estimate == null) delete summary.power.ftp_estimate;
   if (summary.cadence_power == null) delete summary.cadence_power;
+  // 全程无功率数据（跑步/游泳常见）：整个 power 段无意义，省略
+  if (!hasPower) delete summary.power;
 
   // ---- 5. 训练库：入库 + 注入当日 CTL/ATL/TSB（失败不中断主流程） ----
   try {
@@ -911,7 +1087,13 @@ async function main() {
   console.log(JSON.stringify(summary, null, 2));
 }
 
-main().catch((e) => {
-  console.error("解析失败:", e.message);
-  process.exit(1);
-});
+// 仅当作为入口脚本直接运行时执行 main（被测试 import 时不触发）
+const isMain =
+  process.argv[1] &&
+  path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isMain) {
+  main().catch((e) => {
+    console.error("解析失败:", e.message);
+    process.exit(1);
+  });
+}
