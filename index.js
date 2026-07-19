@@ -723,6 +723,23 @@ ${bars}${zero}${line("ctl", "#1f77b4")}${line("atl", "#d62728")}${line("tsb", "#
 <tr><th>月份</th><th>TSS</th><th>CTL</th><th>ATL</th><th>TSB</th></tr>
 ${data.map((d) => `<tr><td>${d.month}</td><td>${d.tss}</td><td>${d.ctl}</td><td>${d.atl}</td><td>${d.tsb}</td></tr>`).join("\n")}
 </table>
+<div style="margin-top:24px;font-size:13px;color:#444;line-height:1.7">
+<h3 style="margin-bottom:8px">指标含义与解读</h3>
+<ul style="margin:0;padding-left:20px">
+<li><b>TSS（训练压力分数，灰柱）</b>：当月训练负荷总量，由每次训练的强度（IF）与时长计算。单次参考：&lt;150 轻松，第二天可正常训练；150–300 中等，疲劳次日可恢复；&gt;300 较大，需要 1–2 天恢复。</li>
+<li><b>CTL（慢性负荷 / 体能，蓝线）</b>：TSS 的 42 天指数加权平均，代表长期训练积累出的"体能底子"。持续缓慢上升 = 体能增长；建议每周增幅不超过 5–7 点，涨太快有过劳/受伤风险；下降则说明训练量不足、体能在流失。</li>
+<li><b>ATL（急性负荷 / 疲劳，红线）</b>：TSS 的 7 天指数加权平均，代表近期疲劳程度。红线明显高于蓝线 = 最近练得比平常狠，疲劳在积累。</li>
+<li><b>TSB（状态 / 新鲜度，绿线）</b>：CTL − ATL，体能与疲劳的差值，是最直接的"今天状态如何"指标：
+<ul style="margin:4px 0;padding-left:20px">
+<li>≥ +15：很新鲜，适合比赛或高强度测试</li>
+<li>+5 ~ +15：赛前调整（减量）的目标区间</li>
+<li>−10 ~ +5：负荷与恢复平衡，可持续训练</li>
+<li>−20 ~ −10：疲劳积累期，注意睡眠与恢复</li>
+<li>&lt; −20：过度疲劳风险，建议安排减量周</li>
+</ul></li>
+</ul>
+<p style="margin-top:8px;color:#777">典型训练节奏：渐进负荷期 CTL 缓升、TSB 维持在 −10 ~ −30；赛前 1–2 周减量让 ATL 回落，TSB 回升到 +5 ~ +15 出赛。</p>
+</div>
 </body></html>`;
   fs.mkdirSync(path.dirname(outPath), { recursive: true });
   fs.writeFileSync(outPath, html);
