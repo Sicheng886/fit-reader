@@ -15,6 +15,8 @@ node index.js 你的骑行.fit ./output
 
 # 批量处理：扫描目录顶层所有 .fit，单文件失败不中断
 node index.js ./input ./output
+# 或使用快捷脚本（等同于 node index.js input/ output/）
+npm run analysis
 
 # 逐月训练汇总（基于本地训练库）
 node index.js --monthly [月数=6]
