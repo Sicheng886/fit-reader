@@ -19,7 +19,16 @@ import {
   computeForm,
   monthlySummary,
   trendMonthly,
+  recentActivities,
+  recentFormDaily,
 } from "./db.js";
+import {
+  buildReviewPrompt,
+  buildPlanPrompt,
+  buildTaperPrompt,
+  buildComparePrompt,
+  thinToWeekly,
+} from "./prompts.js";
 import {
   ATHLETE,
   POWER_ZONES,
@@ -720,6 +729,68 @@ ${data.map((d) => `<tr><td>${d.month}</td><td>${d.tss}</td><td>${d.ctl}</td><td>
   console.log("趋势图已生成:", outPath);
 }
 
+// ---------------- AI 提示词生成命令（P2） ----------------
+
+/** 输出提示词：始终打印 stdout；给了输出路径则同时写 .md 文件 */
+function emitPrompt(text, outPath) {
+  console.log(text);
+  if (outPath) {
+    fs.mkdirSync(path.dirname(path.resolve(outPath)), { recursive: true });
+    fs.writeFileSync(outPath, text);
+    console.error(`\n提示词已写入: ${outPath}`);
+  }
+}
+
+/** 读取 summary.json 文件为对象 */
+function loadSummaryJson(p) {
+  if (!p || !fs.existsSync(p)) {
+    console.error(`找不到 summary 文件: ${p ?? "(未提供)"}`);
+    process.exit(1);
+  }
+  return JSON.parse(fs.readFileSync(p, "utf8"));
+}
+
+/** 周期规划提示词：月汇总 + 逐周 CTL/ATL/TSB + 近期训练清单 */
+function emitPlanPrompt(weeks, outPath) {
+  const daily = recentFormDaily(weeks * 7);
+  if (!daily.length) {
+    console.log("训练库为空，先分析若干 FIT 文件再生成周期规划提示词。");
+    return;
+  }
+  const text = buildPlanPrompt({
+    months: monthlySummary(3),
+    formSeries: thinToWeekly(daily),
+    recentActivities: recentActivities(10),
+  });
+  emitPrompt(text, outPath);
+}
+
+/** 赛前调整提示词：当前状态 + 走势 + 剩余天数 */
+function emitTaperPrompt(raceDate, outPath) {
+  if (!raceDate || !/^\d{4}-\d{2}-\d{2}$/.test(raceDate)) {
+    console.error("用法: node index.js --taper <比赛日期 YYYY-MM-DD> [输出.md]");
+    process.exit(1);
+  }
+  const today = new Date().toISOString().slice(0, 10);
+  const form = computeForm(today);
+  if (!form) {
+    console.log("训练库为空，先分析若干 FIT 文件再生成赛前调整提示词。");
+    return;
+  }
+  const daysLeft = Math.round(
+    (new Date(raceDate + "T00:00:00Z") - new Date(today + "T00:00:00Z")) /
+      86400000,
+  );
+  const text = buildTaperPrompt({
+    raceDate,
+    daysLeft,
+    form,
+    formSeries: thinToWeekly(recentFormDaily(56)),
+    recentActivities: recentActivities(10),
+  });
+  emitPrompt(text, outPath);
+}
+
 // ---------------- 入口：单文件 / 批量 ----------------
 
 async function main() {
@@ -737,12 +808,44 @@ async function main() {
     return;
   }
 
+  // ---- AI 提示词生成子命令（P2） ----
+  if (input === "--review") {
+    emitPrompt(buildReviewPrompt(loadSummaryJson(process.argv[3])), process.argv[4]);
+    return;
+  }
+  if (input === "--plan") {
+    emitPlanPrompt(Number(process.argv[3]) || 8, process.argv[4]);
+    return;
+  }
+  if (input === "--taper") {
+    emitTaperPrompt(process.argv[3], process.argv[4]);
+    return;
+  }
+  if (input === "--compare") {
+    const a = loadSummaryJson(process.argv[3]);
+    const b = loadSummaryJson(process.argv[4]);
+    emitPrompt(buildComparePrompt(a, b), process.argv[5]);
+    return;
+  }
+
   if (!input || !fs.existsSync(input)) {
     console.error("用法:");
     console.error("  node index.js <输入.fit 或包含 .fit 的目录> [输出目录]");
     console.error("  node index.js --monthly [月数=6]              逐月训练汇总");
     console.error(
       "  node index.js --trend [月数=12] [输出.html]   生成 CTL/ATL/TSB 趋势图",
+    );
+    console.error(
+      "  node index.js --review <summary.json> [输出.md]   生成单次复盘 AI 提示词",
+    );
+    console.error(
+      "  node index.js --plan [周数=8] [输出.md]           生成周期规划 AI 提示词",
+    );
+    console.error(
+      "  node index.js --taper <比赛日期> [输出.md]        生成赛前减量 AI 提示词",
+    );
+    console.error(
+      "  node index.js --compare <A.json> <B.json> [输出.md] 生成两次训练对比 AI 提示词",
     );
     process.exit(1);
   }

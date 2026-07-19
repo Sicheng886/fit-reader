@@ -21,6 +21,12 @@ node index.js --monthly [月数=6]
 
 # 生成 CTL/ATL/TSB 逐月趋势图（自包含 HTML）
 node index.js --trend [月数=12] [输出.html]
+
+# 生成 AI 提示词（拼好 上下文+数据+问题，打印到终端供复制；给输出路径则同时写 .md）
+node index.js --review <xxx.summary.json> [输出.md]   # 单次复盘
+node index.js --plan [周数=8] [输出.md]               # 周期规划（自动带月汇总+CTL走势）
+node index.js --taper <比赛日期> [输出.md]            # 赛前减量
+node index.js --compare <A.summary.json> <B.summary.json> [输出.md]  # 两次训练对比
 ```
 
 > 注意：依赖包是 `fit-file-parser`，**不是** `fit-parser`（同名不相干的包）。
@@ -107,12 +113,12 @@ export const ATHLETE = {
 
 ### P2 — AI 分析工作流
 
-- [ ] **提示词模板库**：固化几种提问方式
-  - 单次复盘："分析强度分布，判断训练类型，评估心率漂移"
-  - 周期规划："基于最近 8 周 CTL 趋势，下周应安排什么强度"
-  - 赛前调整："距离比赛还有 2 周，TSB 应调整到多少，怎么减量"
-- [ ] **自动生成 AI 输入**：脚本直接拼好 `上下文 + summary.json + 问题`，一键复制或调用 API
-- [ ] **多次训练对比**：给定两个 summary，让 AI 分析进步/退步
+- [x] **提示词模板库**（`prompts.js`）：固化几种提问方式
+  - 单次复盘（`--review`）：分析强度分布，判断训练类型，评估心率漂移
+  - 周期规划（`--plan`）：基于最近 8 周 CTL 趋势，下周应安排什么强度
+  - 赛前调整（`--taper`）：距离比赛 N 天，TSB 应调整到多少，怎么减量
+- [x] **自动生成 AI 输入**：脚本直接拼好 `上下文 + 数据 + 问题`，打印到终端一键复制（调 API 见 P4）
+- [x] **多次训练对比**（`--compare`）：给定两个 summary，让 AI 分析进步/退步
 
 ### P3 — 数据质量与兼容性
 
@@ -138,4 +144,5 @@ export const ATHLETE = {
 | `index.js`             | 主脚本：解析 + 指标计算 + 输出（单文件/批量/`--monthly`/`--trend`） |
 | `settings.js`          | 全部可调配置：骑手参数、分区定义、各分析算法阈值            |
 | `db.js`                | 训练库：SQLite 入库/去重、CTL/ATL/TSB 计算、月汇总与趋势数据 |
+| `prompts.js`           | AI 提示词模板库：复盘/规划/赛前/对比四种场景的提示词组装    |
 | ~~`make_test_fit.py`~~ | （规划中，尚不存在）测试工具：生成合成 FIT 文件用于回归验证 |

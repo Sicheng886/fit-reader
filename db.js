@@ -3,7 +3,7 @@
  * 训练库（SQLite，node:sqlite 内置模块，零第三方依赖）：
  *   - 每次分析后把 summary 入库（按文件名去重，重复分析覆盖更新）
  *   - 基于历史 TSS 计算 CTL / ATL / TSB（体能/疲劳/状态）
- *   - 周汇总与趋势数据查询
+ *   - 月汇总、趋势数据与提示词上下文查询（recentActivities / recentFormDaily）
  *
  * 数据库文件固定为 ./db/fitness.db，不存在时自动创建。
  */
@@ -126,6 +126,46 @@ export function computeForm(date) {
     tsb: r1(tsb),
     form_note: formNote(tsb),
   };
+}
+
+/**
+ * 最近 N 天逐日负荷序列：[{ date, tss, ctl, atl, tsb }]。
+ * 与 computeForm 同一递推口径，供周期规划/赛前调整提示词取走势数据。
+ */
+export function recentFormDaily(days = 56) {
+  const db = openDb();
+  const row = db.prepare(`SELECT MAX(date) AS d FROM activities`).get();
+  if (!row?.d) return [];
+  const series = dailyTssSeries(row.d);
+  let ctl = 0,
+    atl = 0;
+  const r1 = (x) => Math.round(x * 10) / 10;
+  const daily = series.map((d) => {
+    ctl += (d.tss - ctl) / 42;
+    atl += (d.tss - atl) / 7;
+    return { date: d.date, tss: r1(d.tss), ctl: r1(ctl), atl: r1(atl), tsb: r1(ctl - atl) };
+  });
+  return daily.slice(-days);
+}
+
+/** 最近 n 条训练简明清单（供提示词上下文，按日期倒序） */
+export function recentActivities(n = 10) {
+  const db = openDb();
+  const rows = db
+    .prepare(
+      `SELECT date, duration_sec, distance_km, tss, np, intensity_factor
+       FROM activities ORDER BY date DESC LIMIT ?`,
+    )
+    .all(n);
+  const r1 = (x) => (x == null ? null : Math.round(x * 10) / 10);
+  return rows.map((r) => ({
+    date: r.date,
+    duration_min: r.duration_sec == null ? null : Math.round(r.duration_sec / 60),
+    distance_km: r1(r.distance_km),
+    tss: r.tss == null ? null : Math.round(r.tss),
+    np: r.np == null ? null : Math.round(r.np),
+    intensity_factor: r.intensity_factor == null ? null : r1(r.intensity_factor),
+  }));
 }
 
 /** TSB 中文简评（供 athlete_context / AI 参考） */

@@ -30,6 +30,12 @@ node index.js <目录> [输出目录]
 node index.js --monthly [月数=6]              # 逐月训练汇总
 node index.js --trend [月数=12] [输出.html]   # 生成 CTL/ATL/TSB 逐月趋势图
 
+# AI 提示词生成（P2）：拼好 角色+指标口径+数据+问题，打印到 stdout；给输出路径则同时写 .md
+node index.js --review <summary.json> [输出.md]        # 单次复盘
+node index.js --plan [周数=8] [输出.md]                # 周期规划
+node index.js --taper <比赛日期YYYY-MM-DD> [输出.md]   # 赛前减量
+node index.js --compare <A.json> <B.json> [输出.md]    # 两次训练对比
+
 # 项目内真实示例
 node index.js input/MAGENE_C506SE_2026-07-17_202219_1273797.fit output/
 ```
@@ -38,12 +44,13 @@ node index.js input/MAGENE_C506SE_2026-07-17_202219_1273797.fit output/
 
 ### 必须修改的骑手参数
 
-`settings.js` 中的 `ATHLETE` 常量（`ftp_watts` / `max_hr` / `weight_kg`）是所有派生指标准确性的前提，换骑手必须改这里。当前值为 `ftp: 119W, max_hr: 195, weight: 60kg`。功率/心率分区及间歇识别、爬坡提取、踏频分析的算法阈值（`POWER_ZONES` / `HR_ZONES` / `INTERVAL_DETECTION` / `CLIMB_DETECTION` / `CADENCE_ANALYSIS`）也都集中在 `settings.js`。
+`settings.js` 中的 `ATHLETE` 常量（`ftp_watts` / `max_hr` / `weight_kg`）是所有派生指标准确性的前提，换骑手必须改这里。当前值为 `ftp: 118W, max_hr: 195, weight: 60kg`。功率/心率分区及间歇识别、爬坡提取、踏频分析的算法阈值（`POWER_ZONES` / `HR_ZONES` / `INTERVAL_DETECTION` / `CLIMB_DETECTION` / `CADENCE_ANALYSIS`）也都集中在 `settings.js`。
 
 ## 代码结构
 
 - `settings.js`：全部可调配置（骑手参数、分区、算法阈值），纯数据、无逻辑。
-- `db.js`：训练库模块。基于 Node 内置 `node:sqlite`（≥22.5，零第三方依赖），数据库固定为 `./db/fitness.db`（懒打开，目录/表不存在时自动创建）；提供 `upsertActivity`（按文件名去重）、`computeForm`（CTL/ATL/TSB 指数加权）、`monthlySummary`（逐月汇总与强度分类）、`trendMonthly`（逐月趋势数据）。
+- `db.js`：训练库模块。基于 Node 内置 `node:sqlite`（≥22.5，零第三方依赖），数据库固定为 `./db/fitness.db`（懒打开，目录/表不存在时自动创建）；提供 `upsertActivity`（按文件名去重）、`computeForm`（CTL/ATL/TSB 指数加权）、`monthlySummary`（逐月汇总与强度分类）、`trendMonthly`（逐月趋势数据）、`recentFormDaily`（最近 N 天逐日 form 序列）、`recentActivities`（近期训练简明清单，供提示词上下文）。
+- `prompts.js`：AI 提示词模板库（P2）。`buildMetricGlossary()` 由 settings.js 动态生成指标口径说明；`buildReviewPrompt` / `buildPlanPrompt` / `buildTaperPrompt` / `buildComparePrompt` 四个场景模板拼装完整 Markdown（角色+口径+数据+固化问题清单）；`thinToWeekly()` 把逐日 form 序列抽稀为逐周点。纯函数、无 IO。
 - `index.js`（约 800 行）：主脚本，内部组织为：
 
 | 区块 | 内容 |
@@ -52,7 +59,8 @@ node index.js input/MAGENE_C506SE_2026-07-17_202219_1273797.fit output/
 | P0 分析函数 | `estimateFtp`（20min 峰功率 × 0.95 估算 FTP 并给更新建议）、`detectIntervals`（≥105% FTP 过阈段识别 + 间歇组统计）、`detectClimbs`（30s 窗口坡度 ≥3% 的爬坡段提取）、`cadencePowerAnalysis`（发力时段踏频习惯与踏频-功率相关性） |
 | 单文件流程 `analyzeFile()` | ① 解析 FIT（`force: true`, `km/h`, `km`, `mode: "list"`）→ ② 按秒重采样记录（缺口置 `null`）→ ③ 写 CSV → ④ 计算指标（含 P0 分析）→ ⑤ 训练库入库 + `athlete_context` 注入当日 CTL/ATL/TSB（失败仅警告不中断）→ ⑥ 写 summary JSON，返回结果 |
 | 查询命令 | `printMonthly()`（逐月汇总表）、`writeTrendHtml()`（自包含 HTML 趋势图：月 TSS 柱 + CTL/ATL/TSB 月末折线，原生 SVG 无外部库） |
-| 入口 `main()` | `--monthly` / `--trend` → 训练库查询；输入是目录 → 批量模式（逐文件调用 `analyzeFile`，失败不中断）；输入是文件 → 单文件模式并打印 JSON 全文 |
+| 提示词命令（P2） | `emitPrompt()`（打印 stdout + 可选写 .md）、`loadSummaryJson()`、`emitPlanPrompt()` / `emitTaperPrompt()`（从训练库取数并调 prompts.js 组装） |
+| 入口 `main()` | `--monthly` / `--trend` → 训练库查询；`--review` / `--plan` / `--taper` / `--compare` → 提示词生成；输入是目录 → 批量模式（逐文件调用 `analyzeFile`，失败不中断）；输入是文件 → 单文件模式并打印 JSON 全文 |
 
 目录约定：`input/` 放待分析的 `.fit` 文件，`output/` 放分析结果。这两个目录只是约定，脚本本身不依赖它们。
 
@@ -83,7 +91,7 @@ node index.js input/MAGENE_C506SE_2026-07-17_202219_1273797.fit output/
 ## 已知注意事项
 
 - **README 与实际代码的偏差已修复**：入口文件为 `index.js`，配置在 `settings.js`；`make_test_fit.py` 仍不存在（README 文件清单中已标注为规划中）。
-- README 中包含一份很长的功能路线图（P0–P4），**P0 已全部完成**（批量处理、FTP 自动估算、间歇识别、爬坡段提取、踏频-功率联合分析），**P1 已全部完成**（SQLite 训练库、CTL/ATL/TSB 写入 `athlete_context`、月汇总 `--monthly`、趋势图 `--trend`；因训练频率低，路线图的“周汇总”落地为月汇总）。实现新功能前先看是否已在路线图中、应归入哪个优先级，完成后勾选对应条目。
+- README 中包含一份很长的功能路线图（P0–P4），**P0 已全部完成**（批量处理、FTP 自动估算、间歇识别、爬坡段提取、踏频-功率联合分析），**P1 已全部完成**（SQLite 训练库、CTL/ATL/TSB 写入 `athlete_context`、月汇总 `--monthly`、趋势图 `--trend`；因训练频率低，路线图的“周汇总”落地为月汇总），**P2 已全部完成**（提示词模板库 `prompts.js` + 四个提示词命令 `--review`/`--plan`/`--taper`/`--compare`，只生成文本供复制，调 API 属 P4）。实现新功能前先看是否已在路线图中、应归入哪个优先级，完成后勾选对应条目。
 - 没有 CI、没有部署流程——这是一个纯本地脚本项目（git 仅用于本地版本控制）。
 - 项目源码统一使用 ESM（`.js` + `"type": "module"`），`fit-file-parser` 为 CommonJS 包，通过默认导入（`import FitParser from "fit-file-parser"`）由 Node 的 CJS-ESM 互操作处理。
 - FIT 解析已开启 `force: true` 容忍损坏文件，但被跳过的记录数目前不记录（README P3 待办）。

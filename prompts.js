@@ -1,0 +1,159 @@
+/**
+ * prompts.js
+ * AI 分析提示词模板库（P2）：把「角色 + 指标口径 + 训练数据 + 固化问题」
+ * 拼成完整 Markdown，打印到终端供一键复制给任意 AI（API 对接属 P4）。
+ *
+ * 指标口径说明由 settings.js 动态生成，改骑手参数/分区后提示词自动同步。
+ * 本模块全是纯函数，无状态、无 IO。
+ */
+
+import { ATHLETE, POWER_ZONES, HR_ZONES } from "./settings.js";
+
+// ---------------- 公共片段 ----------------
+
+/** 指标口径与骑手参数说明（数值取自 settings.js，不硬编码） */
+export function buildMetricGlossary() {
+  const pct = (x) => (x === Infinity ? "∞" : `${Math.round(x * 100)}%`);
+  const powerZones = POWER_ZONES.map(
+    (z) => `  - ${z.name}: ${pct(z.min)}–${pct(z.max)} FTP`,
+  ).join("\n");
+  const hrZones = HR_ZONES.map(
+    (z) => `  - ${z.name}: ${pct(z.min)}–${pct(z.max)} 最大心率`,
+  ).join("\n");
+
+  return `## 指标口径与骑手参数
+
+骑手参数：FTP ${ATHLETE.ftp_watts}W，最大心率 ${ATHLETE.max_hr}bpm，体重 ${ATHLETE.weight_kg}kg。
+
+指标定义（口径与 Coggan / TrainingPeaks 一致）：
+- NP（标准化功率）：30 秒滚动平均的四次方均根，反映"生理代价等效功率"
+- IF（强度因子）= NP / FTP；TSS = 时长秒 × NP × IF / (FTP × 3600) × 100
+- VI（变异指数）= NP / 平均功率，越接近 1 输出越平稳
+- 心率漂移（有氧解耦）：前后半程 效率因子(功率/心率) 的相对变化，<5% 为有氧基础扎实的标志
+- CTL（体能）= TSS 的 42 天指数加权；ATL（疲劳）= 7 天指数加权；TSB（状态）= CTL − ATL，正值=新鲜
+- 强度分布类型：polarized=极化（大量低强度+高强度多于中强度）、pyramidal=金字塔（低>中>高）、sweet_spot=甜区取向
+
+功率分区（Coggan 7 区，%FTP）：
+${powerZones}
+
+心率分区（%最大心率）：
+${hrZones}`;
+}
+
+const ROLE = `## 角色
+
+你是一位严谨、务实的自行车教练，熟悉 Coggan 功率训练体系与 TrainingPeaks 负荷模型。请基于数据给出具体、可执行的建议，避免泛泛而谈；数据缺失或可信度不足时明确指出，不要编造。`;
+
+function jsonBlock(obj) {
+  return "```json\n" + JSON.stringify(obj, null, 2) + "\n```";
+}
+
+/** 统一拼装：角色 + 口径 + 各数据段 + 问题清单 */
+function assemble(dataSections, questions) {
+  return [
+    ROLE,
+    buildMetricGlossary(),
+    ...dataSections,
+    `## 请回答\n\n${questions.map((q, i) => `${i + 1}. ${q}`).join("\n")}`,
+  ].join("\n\n");
+}
+
+// ---------------- 场景模板 ----------------
+
+/**
+ * 单次复盘：传入某次训练的 summary.json 对象。
+ */
+export function buildReviewPrompt(summary) {
+  return assemble(
+    [`## 训练数据（单次骑行汇总）\n\n${jsonBlock(summary)}`],
+    [
+      "判断这次训练的类型（恢复/有氧耐力/甜区/阈值/间歇/比赛模拟等），并说明依据。",
+      "评估功率与心率的强度分布是否合理：对该训练类型而言，各区时间占比是否符合预期？",
+      "评估心率漂移（有氧解耦）：数值说明什么？对有氧基础训练有何指示？",
+      "如有间歇组（interval_set）或爬坡段（climbs）：完成质量如何（功率达成度、衰减情况）？",
+      "结合 athlete_context 中的 CTL/ATL/TSB，评价这次训练在当前训练周期中的位置与必要性。",
+      "如 anomalies / data_quality 有异常标注，说明可能原因及数据可信度影响。",
+      "给出 2-3 条下次同类训练的改进建议。",
+    ],
+  );
+}
+
+/**
+ * 周期规划：基于月汇总 + 逐周 CTL/ATL/TSB 走势 + 近期训练清单。
+ * @param {{ months: object[], formSeries: object[], recentActivities: object[] }} data
+ */
+export function buildPlanPrompt({ months, formSeries, recentActivities }) {
+  return assemble(
+    [
+      `## 逐月训练汇总\n\n${jsonBlock(months)}`,
+      `## 近期 CTL/ATL/TSB 走势（逐周取样，每天 0 点值）\n\n${jsonBlock(formSeries)}`,
+      `## 近期训练清单\n\n${jsonBlock(recentActivities)}`,
+    ],
+    [
+      "评价最近的 CTL 走势：体能是在增长、停滞还是下滑？增速是否安全（一般认为每周 CTL 增幅不宜超过 5-7 点）？",
+      "当前 TSB 与疲劳状态如何？近期是否需要安排减量恢复？",
+      "从月汇总的强度分布类型（polarized / pyramidal / sweet_spot）看，目前的强度结构是否合理？",
+      "下一周应安排什么强度结构？请给出逐日训练建议（类型、时长、目标功率区间或 %FTP）。",
+      "中期（4-8 周）应侧重什么能力短板？依据峰功率曲线或间歇数据说明。",
+    ],
+  );
+}
+
+/**
+ * 赛前调整（减量 taper）。
+ * @param {{ raceDate: string, daysLeft: number, form: object, formSeries: object[], recentActivities: object[] }} data
+ */
+export function buildTaperPrompt({
+  raceDate,
+  daysLeft,
+  form,
+  formSeries,
+  recentActivities,
+}) {
+  return assemble(
+    [
+      `## 比赛信息\n\n比赛日期：${raceDate}（距今 ${daysLeft} 天）`,
+      `## 当前状态（今日 CTL/ATL/TSB）\n\n${jsonBlock(form)}`,
+      `## 近期 CTL/ATL/TSB 走势（逐周取样）\n\n${jsonBlock(formSeries)}`,
+      `## 近期训练清单\n\n${jsonBlock(recentActivities)}`,
+    ],
+    [
+      `以比赛日 TSB 达到 +5 ~ +15（新鲜但不掉体能）为目标，当前 TSB 与目标差距多大？`,
+      "给出从今天到比赛日的逐日减量计划：每天训练类型、时长、强度（%FTP），说明减量幅度与依据。",
+      "减量期间应保留多少高强度（强度保留 vs 纯休息）以避免体能流失？",
+      "赛前最后 48 小时的具体安排建议（含预热/ opener 训练）。",
+      "指出当前数据中的风险点（如疲劳过深、CTL 太低、近期训练结构问题）。",
+    ],
+  );
+}
+
+/**
+ * 两次训练对比：传入两个 summary.json 对象。
+ */
+export function buildComparePrompt(summaryA, summaryB) {
+  return assemble(
+    [
+      `## 训练 A（${summaryA.activity?.date ?? "未知日期"}）\n\n${jsonBlock(summaryA)}`,
+      `## 训练 B（${summaryB.activity?.date ?? "未知日期"}）\n\n${jsonBlock(summaryB)}`,
+    ],
+    [
+      "先判断两次训练是否属于同类训练（可比性如何），若类型不同请指出对比的局限。",
+      "时长归一化比较核心指标：IF、VI、心率漂移、功体比，哪次完成质量更高？",
+      "比较峰功率曲线（5s/1min/5min/20min）与分区时间分布，能力结构上有何变化？",
+      "比较踏频-功率习惯（cadence_power）与间歇/爬坡数据（如有）。",
+      "综合判断：从 A 到 B 是进步、退步还是持平？给出证据。",
+      "基于对比结果，给出下一阶段的训练重点建议。",
+    ],
+  );
+}
+
+// ---------------- 数据整形（供 index.js 调用） ----------------
+
+/** 逐日 form 序列抽稀为逐周点（每 7 天取一个，含最后一天），控制 prompt 长度 */
+export function thinToWeekly(dailySeries) {
+  const out = [];
+  for (let i = 0; i < dailySeries.length; i += 7) out.push(dailySeries[i]);
+  const last = dailySeries[dailySeries.length - 1];
+  if (last && out[out.length - 1] !== last) out.push(last);
+  return out;
+}
