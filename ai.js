@@ -7,12 +7,13 @@
  *   FIT_AI_API_KEY  API 密钥（必填，未设置则 isAiConfigured() = false）
  *   FIT_AI_BASE_URL 接口地址，默认 https://api.moonshot.cn/v1（Kimi）
  *   FIT_AI_MODEL    模型名，默认 moonshot-v1-32k（复盘提示词较长，8k 上下文可能不够）
+ *   FIT_AI_TEMPERATURE 采样温度（可选；缺省不传用 API 默认，部分模型只允许特定取值）
+ * 配置可写在项目根目录 .env 文件里（server.js 启动时通过 Node 内置
+ * process.loadEnvFile() 自动注入，无需 dotenv 依赖）。
  *
  * 本模块只做一次 POST，无状态、无第三方依赖（Node ≥18 内置 fetch）。
+ * 配置项在调用时惰性读取（.env 注入发生在 server.js 入口，晚于模块加载）。
  */
-
-const BASE_URL = process.env.FIT_AI_BASE_URL || "https://api.moonshot.cn/v1";
-const MODEL = process.env.FIT_AI_MODEL || "moonshot-v1-32k";
 
 /** 是否已配置 API 密钥（未配置时前端展示提示词供手动复制） */
 export function isAiConfigured() {
@@ -21,7 +22,11 @@ export function isAiConfigured() {
 
 /** 当前生效的接口/模型配置（供前端展示，不含密钥） */
 export function aiConfigInfo() {
-  return { base_url: BASE_URL, model: MODEL, configured: isAiConfigured() };
+  return {
+    base_url: process.env.FIT_AI_BASE_URL || "https://api.moonshot.cn/v1",
+    model: process.env.FIT_AI_MODEL || "moonshot-v1-32k",
+    configured: isAiConfigured(),
+  };
 }
 
 /**
@@ -32,21 +37,24 @@ export function aiConfigInfo() {
 export async function callAI(prompt, { timeoutMs = 120000 } = {}) {
   const key = process.env.FIT_AI_API_KEY;
   if (!key) throw new Error("未配置 FIT_AI_API_KEY 环境变量，无法调用 AI API");
+  const { base_url, model } = aiConfigInfo();
+
+  // temperature 缺省不传（用 API 默认）：部分模型（如 kimi-k3）只允许特定取值，
+  // 需要调参时通过 FIT_AI_TEMPERATURE 显式指定
+  const request = { model, messages: [{ role: "user", content: prompt }] };
+  if (process.env.FIT_AI_TEMPERATURE != null)
+    request.temperature = Number(process.env.FIT_AI_TEMPERATURE);
 
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    const resp = await fetch(`${BASE_URL}/chat/completions`, {
+    const resp = await fetch(`${base_url}/chat/completions`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${key}`,
       },
-      body: JSON.stringify({
-        model: MODEL,
-        messages: [{ role: "user", content: prompt }],
-        temperature: 0.3,
-      }),
+      body: JSON.stringify(request),
       signal: ctrl.signal,
     });
     if (!resp.ok) {

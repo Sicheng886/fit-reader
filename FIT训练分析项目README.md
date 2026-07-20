@@ -46,14 +46,16 @@ npm run web
 - **上传**：拖拽 .fit 文件即分析入库（文件存 `input/`，结果写 `output/`）
 - **AI 分析**：单次复盘 / 周期规划 / 赛前减量 / 两次对比四种场景一键生成报告
 
-AI 直接出报告需配置环境变量（OpenAI 兼容接口，Kimi/OpenAI/DeepSeek 均可）：
+AI 直接出报告需配置环境变量（OpenAI 兼容接口，Kimi/OpenAI/DeepSeek 均可）。最简单的方式是在项目根目录建一个 `.env` 文件（已在 `.gitignore` 中，`npm run web` 启动时通过 Node 内置 `process.loadEnvFile()` 自动注入，无需 dotenv）：
 
-```bash
-# Windows PowerShell: $env:FIT_AI_API_KEY="sk-..."
-export FIT_AI_API_KEY="sk-..."                        # 必填
-export FIT_AI_BASE_URL="https://api.moonshot.cn/v1"   # 可选，默认 Kimi
-export FIT_AI_MODEL="moonshot-v1-32k"                 # 可选，复盘提示词较长建议 32k 上下文
+```ini
+FIT_AI_API_KEY=sk-...                          # 必填
+FIT_AI_BASE_URL=https://api.moonshot.cn/v1     # 可选，默认 Kimi
+FIT_AI_MODEL=moonshot-v1-32k                   # 可选，复盘提示词较长建议 32k 上下文
+FIT_AI_TEMPERATURE=0.3                         # 可选，缺省不传（部分模型只允许特定取值，如 kimi-k2.x 只允许 1）
 ```
+
+也可以用传统方式 export（Windows PowerShell: `$env:FIT_AI_API_KEY="sk-..."`）。模型名以你的账号可用列表为准（可用 `GET $FIT_AI_BASE_URL/models` 带密钥查询）。
 
 未配置密钥时自动退化为 P2 模式：生成完整提示词 + 一键复制按钮，粘贴到任意 AI 即可。
 

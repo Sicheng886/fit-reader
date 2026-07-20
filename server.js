@@ -276,6 +276,14 @@ const isMain =
   process.argv[1] &&
   path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
+  // Node ≥21.7 内置 .env 注入（无需 dotenv）：项目根目录存在 .env 时自动加载。
+  // 放在入口分支里而非模块顶层：测试 import createServer 时不加载真实 .env，
+  // 避免真实 FIT_AI_API_KEY 泄漏进测试进程并改变"未配置"分支行为。
+  try {
+    process.loadEnvFile?.();
+  } catch {
+    // .env 不存在时静默跳过（环境变量仍可直接 export 提供）
+  }
   createServer().listen(PORT, () => {
     console.log(`fit-reader Web 界面: http://localhost:${PORT}`);
     if (!isAiConfigured())
