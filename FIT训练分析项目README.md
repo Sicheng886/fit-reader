@@ -54,7 +54,11 @@ FIT_AI_BASE_URL=https://api.moonshot.cn/v1     # 可选，默认 Kimi
 FIT_AI_MODEL=moonshot-v1-32k                   # 可选，复盘提示词较长建议 32k 上下文
 FIT_AI_TEMPERATURE=0.3                         # 可选，缺省不传（部分模型只允许特定取值，如 kimi-k2.x 只允许 1）
 FIT_AI_TIMEOUT_MS=600000                       # 可选，默认 5 分钟（300000ms）；复盘提示词很长，建议 10 分钟起步
+FIT_AI_STREAM=false                            # 可选，默认 false；部分账号/模型不会真正流式吐字，非流式更稳
+FIT_AI_STALL_MS=120000                         # 可选，仅在 FIT_AI_STREAM=true 时生效：流空闲超时，默认 60s
 ```
+
+> 实测 kimi-k2.6 长提示词会先把 4000 字回复全部生成完（约 3-4 分钟）再一次性下发，看起来像"卡死"，其实是非流式延迟。默认非流式 + 每 30 秒心跳日志更适合这类模型。
 
 也可以用传统方式 export（Windows PowerShell: `$env:FIT_AI_API_KEY="sk-..."`）。模型名以你的账号可用列表为准（可用 `GET $FIT_AI_BASE_URL/models` 带密钥查询）。
 

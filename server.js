@@ -234,7 +234,24 @@ async function handleApi(req, res, url) {
       return sendJson(res, 200, { configured: false, prompt });
     }
     try {
-      const markdown = await callAI(prompt);
+      let chunkCount = 0, charCount = 0, heartbeats = 0;
+      const markdown = await callAI(prompt, {
+        onChunk: (delta) => {
+          chunkCount++;
+          charCount += delta.length;
+          if (chunkCount === 1) console.log("[AI] 开始接收流式 chunk...");
+          if (chunkCount % 5 === 0) {
+            console.log(
+              `[AI] 已接收 ${chunkCount} 个 chunk，累计 ${charCount} 字符`,
+            );
+          }
+        },
+        onHeartbeat: () => {
+          heartbeats++;
+          console.log(`[AI] 仍在生成中...（${heartbeats * 30}s）`);
+        },
+      });
+      console.log(`[AI] 完成：${chunkCount} 个 chunk，${charCount} 字符，心跳 ${heartbeats} 次`);
       sendJson(res, 200, { configured: true, markdown });
     } catch (e) {
       sendJson(res, 502, { error: `AI 调用失败: ${e.message}`, prompt });
