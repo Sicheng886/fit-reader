@@ -53,6 +53,7 @@ FIT_AI_API_KEY=sk-...                          # 必填
 FIT_AI_BASE_URL=https://api.moonshot.cn/v1     # 可选，默认 Kimi
 FIT_AI_MODEL=moonshot-v1-32k                   # 可选，复盘提示词较长建议 32k 上下文
 FIT_AI_TEMPERATURE=0.3                         # 可选，缺省不传（部分模型只允许特定取值，如 kimi-k2.x 只允许 1）
+FIT_AI_TIMEOUT_MS=600000                       # 可选，默认 5 分钟（300000ms）；复盘提示词很长，建议 10 分钟起步
 ```
 
 也可以用传统方式 export（Windows PowerShell: `$env:FIT_AI_API_KEY="sk-..."`）。模型名以你的账号可用列表为准（可用 `GET $FIT_AI_BASE_URL/models` 带密钥查询）。
