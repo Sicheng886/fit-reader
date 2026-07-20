@@ -39,6 +39,18 @@ function openDb() {
       created_at TEXT DEFAULT (datetime('now'))
     );
     CREATE INDEX IF NOT EXISTS idx_activities_date ON activities(date);
+
+    CREATE TABLE IF NOT EXISTS ai_reports (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      mode TEXT NOT NULL,
+      file_name TEXT,
+      race_date TEXT,
+      compare_with TEXT,
+      prompt TEXT NOT NULL,
+      markdown TEXT NOT NULL,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_ai_reports_mode_created ON ai_reports(mode, created_at DESC);
   `);
   return _db;
 }
@@ -49,6 +61,68 @@ export function closeDb() {
     _db.close();
     _db = null;
   }
+}
+
+/** 保存 AI 分析报告；每个 mode 仅保留最近 10 条 */
+export function saveAiReport(mode, context, prompt, markdown) {
+  const db = openDb();
+  const info = db
+    .prepare(
+      `INSERT INTO ai_reports (mode, file_name, race_date, compare_with, prompt, markdown)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      mode,
+      context?.file_name ?? null,
+      context?.race_date ?? null,
+      context?.compare_with ?? null,
+      prompt ?? "",
+      markdown ?? "",
+    );
+  // 每个 mode 仅保留最近 10 条（用 id DESC，自增主键严格反映插入顺序，不受 created_at 秒级精度影响）
+  db.prepare(
+    `DELETE FROM ai_reports
+     WHERE id NOT IN (
+       SELECT id FROM ai_reports WHERE mode = ? ORDER BY id DESC LIMIT 10
+     ) AND mode = ?`,
+  ).run(mode, mode);
+  return Number(info.lastInsertRowid);
+}
+
+/** 列出某 mode 的最近 N 条报告（默认 10） */
+export function listAiReports(mode, n = 10) {
+  const db = openDb();
+  const rows = db
+    .prepare(
+      `SELECT id, mode, file_name, race_date, compare_with, created_at
+       FROM ai_reports WHERE mode = ? ORDER BY id DESC LIMIT ?`,
+    )
+    .all(mode, n);
+  return rows.map((r) => ({
+    id: r.id,
+    mode: r.mode,
+    file_name: r.file_name,
+    race_date: r.race_date,
+    compare_with: r.compare_with,
+    created_at: r.created_at,
+  }));
+}
+
+/** 按 id 取单条完整报告（含 prompt + markdown），不存在返回 null */
+export function getAiReport(id) {
+  const db = openDb();
+  const row = db.prepare(`SELECT * FROM ai_reports WHERE id = ?`).get(id);
+  if (!row) return null;
+  return {
+    id: row.id,
+    mode: row.mode,
+    file_name: row.file_name,
+    race_date: row.race_date,
+    compare_with: row.compare_with,
+    prompt: row.prompt,
+    markdown: row.markdown,
+    created_at: row.created_at,
+  };
 }
 
 /** 分析结果入库：同一文件名重复分析时覆盖更新 */

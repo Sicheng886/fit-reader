@@ -21,7 +21,7 @@ delete process.env.FIT_AI_API_KEY; // 确保走"未配置→返回提示词"分�
 
 const { buildRideFit } = await import("./make_test_fit.mjs");
 const { createServer } = await import("../server.js");
-const { closeDb } = await import("../db.js");
+const { closeDb, saveAiReport, listAiReports, getAiReport } = await import("../db.js");
 
 let server, base;
 
@@ -137,4 +137,16 @@ test("上传非 .fit 文件名被拒绝", async () => {
     body: "hello",
   });
   assert.equal(resp.status, 400);
+});
+
+test("AI 报告缓存：每个 mode 仅保留最近 10 条", () => {
+  for (let i = 1; i <= 12; i++) {
+    saveAiReport("review", { file_name: `ride_${i}.fit` }, "prompt", `report ${i}`);
+  }
+  const rows = listAiReports("review");
+  assert.equal(rows.length, 10);
+  assert.equal(rows[0].file_name, "ride_12.fit"); // 最新的在前
+  const latest = getAiReport(rows[0].id);
+  assert.equal(latest.markdown, "report 12");
+  assert.match(latest.prompt, /prompt/);
 });

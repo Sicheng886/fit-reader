@@ -47,6 +47,8 @@ const ZONE_COLORS = {
   Z5: "#ffb03f", Z6: "#ff7a45", Z7: "#ff5d73",
 };
 
+const MODE_LABEL = { review: "单次复盘", plan: "周期规划", taper: "赛前减量", compare: "两次对比" };
+
 // TSB 状态简评（与 db.js formNote 同口径）
 function formNote(tsb) {
   if (tsb >= 15) return "状态很新鲜，适合比赛或高强度测试";
@@ -207,47 +209,52 @@ function peakCurveHtml(curve, ftp) {
       .join("")}</div></div>`;
 }
 
-// ---------------- 极简 Markdown 渲染 ----------------
+// ---------------- 历史 AI 报告 ----------------
 
-function renderMarkdown(md) {
-  const inline = (s) =>
-    esc(s)
-      .replace(/`([^`]+)`/g, "<code>$1</code>")
-      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-  const lines = String(md).split("\n");
-  let html = "", inCode = false, codeBuf = [], listType = null;
-  const closeList = () => {
-    if (listType) { html += `</${listType}>`; listType = null; }
-  };
-  for (const line of lines) {
-    if (/^```/.test(line.trim())) {
-      if (inCode) {
-        html += `<pre><code>${esc(codeBuf.join("\n"))}</code></pre>`;
-        codeBuf = []; inCode = false;
-      } else { closeList(); inCode = true; }
-      continue;
-    }
-    if (inCode) { codeBuf.push(line); continue; }
-    const h = line.match(/^(#{1,4})\s+(.*)/);
-    if (h) { closeList(); html += `<h${h[1].length}>${inline(h[2])}</h${h[1].length}>`; continue; }
-    const ul = line.match(/^\s*[-*]\s+(.*)/);
-    if (ul) {
-      if (listType !== "ul") { closeList(); html += "<ul>"; listType = "ul"; }
-      html += `<li>${inline(ul[1])}</li>`; continue;
-    }
-    const ol = line.match(/^\s*\d+[.、)]\s+(.*)/);
-    if (ol) {
-      if (listType !== "ol") { closeList(); html += "<ol>"; listType = "ol"; }
-      html += `<li>${inline(ol[1])}</li>`; continue;
-    }
-    const q = line.match(/^>\s?(.*)/);
-    if (q) { closeList(); html += `<blockquote>${inline(q[1])}</blockquote>`; continue; }
-    if (!line.trim()) { closeList(); continue; }
-    closeList(); html += `<p>${inline(line)}</p>`;
+async function loadReportList(container, mode = "all") {
+  const modes = mode === "all" ? ["review", "plan", "taper", "compare"] : [mode];
+  const rows = (await Promise.all(modes.map((m) => api(`/api/ai/reports?mode=${m}`))))
+    .flatMap((r, i) => r.reports.map((rep) => ({ ...rep, mode: modes[i] })))
+    .sort((a, b) => (a.created_at < b.created_at ? 1 : -1))
+    .slice(0, 10);
+  if (!rows.length) {
+    container.innerHTML = `<div class="empty">暂无 ${mode === "all" ? "" : MODE_LABEL[mode]} 缓存报告</div>`;
+    return;
   }
-  closeList();
-  if (inCode) html += `<pre><code>${esc(codeBuf.join("\n"))}</code></pre>`;
-  return html;
+  container.innerHTML = `<table class="data-table">
+    <tr><th>时间</th><th>类别</th><th>关联训练</th><th>操作</th></tr>
+    ${rows.map((r) => {
+      const extra = r.race_date ? `比赛 ${r.race_date}` : r.compare_with ? `对比 ${esc(r.compare_with)}` : "";
+      return `<tr>
+        <td>${r.created_at}</td>
+        <td>${MODE_LABEL[r.mode] ?? r.mode}</td>
+        <td>${esc(r.file_name ?? extra ?? "-")}</td>
+        <td><button class="btn ghost" data-id="${r.id}"><span>加载</span></button></td>
+      </tr>`;
+    }).join("")}
+  </table>`;
+  container.querySelectorAll("button[data-id]").forEach((btn) =>
+    btn.addEventListener("click", () => renderCachedReport(Number(btn.dataset.id))),
+  );
+}
+
+async function renderCachedReport(id) {
+  const panel = $("#aiPanel"), body = $("#aiBody");
+  if (!panel || !body) return;
+  panel.style.display = "";
+  body.innerHTML = `<div class="loading">加载报告…</div>`;
+  panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  try {
+    const r = await api(`/api/ai/report?id=${id}`);
+    body.innerHTML = `<div class="ai-result">${r.html || renderMarkdownFallback(r.markdown)}</div>`;
+  } catch (e) {
+    body.innerHTML = `<div class="callout">${esc(e.message)}</div>`;
+  }
+}
+
+/** 服务端未返回 html 时的兜底（已弃用极简 Markdown 渲染，改用 marked 服务端转 HTML） */
+function renderMarkdownFallback(md) {
+  return `<p>${esc(md).replace(/\n{2,}/g, "</p><p>").replace(/\n/g, "<br>")}</p>`;
 }
 
 // ---------------- 视图：概览 ----------------
@@ -639,6 +646,19 @@ async function renderAI() {
     <div class="panel" id="aiPanel" style="display:none">
       <div class="panel-title">AI 输出</div>
       <div id="aiBody"></div>
+    </div>
+    <div class="panel">
+      <div class="panel-title">历史 AI 报告（每类最近 10 条，自动滚动保留）</div>
+      <div style="margin-bottom:12px">
+        <select id="aiReportMode">
+          <option value="all">全部</option>
+          <option value="review">单次复盘</option>
+          <option value="plan">周期规划</option>
+          <option value="taper">赛前减量</option>
+          <option value="compare">两次对比</option>
+        </select>
+      </div>
+      <div id="aiReportList"><div class="empty">加载中…</div></div>
     </div>`;
 
   $("#btnAiReview").addEventListener("click", () =>
@@ -652,6 +672,9 @@ async function renderAI() {
   });
   $("#btnAiCompare").addEventListener("click", () =>
     runAi({ mode: "compare", file_name: $("#aiCmpA").value, compare_with: $("#aiCmpB").value }, $("#aiPanel"), $("#aiBody")));
+  $("#aiReportMode").addEventListener("change", () =>
+    loadReportList($("#aiReportList"), $("#aiReportMode").value));
+  await loadReportList($("#aiReportList"));
 }
 
 /** 调 /api/ai 并渲染结果（已配置→Markdown 报告；未配置→提示词 + 复制按钮） */
@@ -666,7 +689,10 @@ async function runAi(payload, panel, body) {
       body: JSON.stringify(payload),
     });
     if (r.configured && r.markdown) {
-      body.innerHTML = `<div class="ai-result">${renderMarkdown(r.markdown)}</div>`;
+      body.innerHTML = `<div class="ai-result">${r.html || renderMarkdownFallback(r.markdown)}</div>`;
+      // 生成新报告后刷新历史列表
+      const list = $("#aiReportList");
+      if (list) loadReportList(list, $("#aiReportMode")?.value || "all");
     } else {
       body.innerHTML = `
         <p class="muted" style="margin-bottom:10px">未配置 AI API，以下为完整提示词，复制到任意 AI 即可：</p>

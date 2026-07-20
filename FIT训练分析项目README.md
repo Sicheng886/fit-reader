@@ -58,14 +58,17 @@ FIT_AI_STREAM=false                            # 可选，默认 false；部分�
 FIT_AI_STALL_MS=120000                         # 可选，仅在 FIT_AI_STREAM=true 时生效：流空闲超时，默认 60s
 ```
 
-> 实测 kimi-k2.6 长提示词会先把 4000 字回复全部生成完（约 3-4 分钟）再一次性下发，看起来像"卡死"，其实是非流式延迟。默认非流式 + 每 30 秒心跳日志更适合这类模型。
+- AI 报告会自动写入 `ai_reports` 表并按 mode 保留最近 10 条；Web 界面「AI 分析」页可查看历史报告并加载
+- 输出用 `marked` 在服务端转成 HTML，前端直接渲染，支持表格、代码块等 Markdown 元素
+- 模型名以你的账号可用列表为准（可用 `GET $FIT_AI_BASE_URL/models` 带密钥查询）
+
 
 也可以用传统方式 export（Windows PowerShell: `$env:FIT_AI_API_KEY="sk-..."`）。模型名以你的账号可用列表为准（可用 `GET $FIT_AI_BASE_URL/models` 带密钥查询）。
 
 未配置密钥时自动退化为 P2 模式：生成完整提示词 + 一键复制按钮，粘贴到任意 AI 即可。
 
 
-> 注意：依赖包是 `fit-file-parser`，**不是** `fit-parser`（同名不相干的包）。
+> 注意：依赖包是 `fit-file-parser`（**不是** `fit-parser`）和 `marked`（AI 报告 Markdown 转 HTML）。
 
 ## 配置
 
@@ -187,12 +190,12 @@ export const ATHLETE = {
 | ---------------------- | ----------------------------------------------------------- |
 | `index.js`             | 主脚本：解析 + 指标计算 + 输出（单文件/批量/`--monthly`/`--trend`） |
 | `settings.js`          | 全部可调配置：骑手参数、分区定义、各分析算法阈值            |
-| `db.js`                | 训练库：SQLite 入库/去重、CTL/ATL/TSB 计算、月汇总与趋势数据 |
+| `db.js`                | 训练库：SQLite 入库/去重、CTL/ATL/TSB 计算、月汇总与趋势数据；**AI 报告缓存（`ai_reports` 表，每 mode 最近 10 条）** |
 | `prompts.js`           | AI 提示词模板库：复盘/规划/赛前/对比四种场景的提示词组装    |
-| `ai.js`                | AI API 客户端（P4）：OpenAI 兼容 chat/completions，默认 Kimi |
-| `server.js`            | Web 服务（P4）：零依赖 HTTP 服务 + REST API（`npm run web`） |
-| `web/`                 | Web 前端（P4）：纯 HTML/CSS/JS SPA，手写 SVG 图表，暗色运动风 |
+| `ai.js`                | AI API 客户端（P4）：OpenAI 兼容 chat/completions，默认 Kimi；支持流式/非流式、心跳日志、超时参数 |
+| `server.js`            | Web 服务（P4）：零依赖 HTTP 服务 + REST API（含 `POST /api/ai` 保存并返回 HTML、`GET /api/ai/reports`、`GET /api/ai/report`） |
+| `web/`                 | Web 前端（P4）：纯 HTML/CSS/JS SPA，手写 SVG 图表，暗色运动风；AI 输出用服务端 `marked` HTML 渲染，支持历史报告列表 |
 | `test/make_test_fit.mjs` | 测试工具：手写 FIT 二进制生成器（骑行/跑步/游泳/损坏场景） |
 | `test/unit.test.mjs`   | 指标算法纯函数单元测试（node:test）                          |
 | `test/e2e.test.mjs`    | 端到端回归：合成 FIT → analyzeFile → 校验 CSV + summary      |
-| `test/web.test.mjs`    | Web 服务端到端：上传/概览/详情/时序/AI 提示词/路径安全       |
+| `test/web.test.mjs`    | Web 服务端到端：上传/概览/详情/时序/AI 提示词/路径安全/AI 缓存 10 条限制 |

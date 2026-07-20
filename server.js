@@ -19,10 +19,14 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { marked } from "marked";
 import { analyzeFile } from "./index.js";
 import {
   listActivities,
   getActivitySummary,
+  saveAiReport,
+  listAiReports,
+  getAiReport,
   monthlySummary,
   trendMonthly,
   recentFormDaily,
@@ -251,11 +255,44 @@ async function handleApi(req, res, url) {
           console.log(`[AI] 仍在生成中...（${heartbeats * 30}s）`);
         },
       });
-      console.log(`[AI] 完成：${chunkCount} 个 chunk，${charCount} 字符，心跳 ${heartbeats} 次`);
-      sendJson(res, 200, { configured: true, markdown });
+      const reportId = saveAiReport(body.mode, body, prompt, markdown);
+      const html = marked.parse(markdown, {
+        gfm: true,
+        headerIds: false,
+        mangle: false,
+      });
+      console.log(
+        `[AI] 完成：report_id=${reportId}，${chunkCount} 个 chunk，${charCount} 字符，心跳 ${heartbeats} 次`,
+      );
+      sendJson(res, 200, { configured: true, markdown, html, report_id: reportId });
     } catch (e) {
       sendJson(res, 502, { error: `AI 调用失败: ${e.message}`, prompt });
     }
+    return;
+  }
+
+  // GET /api/ai/reports?mode=review
+  if (req.method === "GET" && url.pathname === "/api/ai/reports") {
+    const mode = url.searchParams.get("mode");
+    if (!mode || !/^(review|plan|taper|compare)$/.test(mode))
+      return sendJson(res, 400, { error: "mode 参数需为 review/plan/taper/compare" });
+    sendJson(res, 200, { mode, reports: listAiReports(mode, 10) });
+    return;
+  }
+
+  // GET /api/ai/report?id=1
+  if (req.method === "GET" && url.pathname === "/api/ai/report") {
+    const id = Number(url.searchParams.get("id"));
+    if (!Number.isInteger(id) || id <= 0)
+      return sendJson(res, 400, { error: "id 参数无效" });
+    const row = getAiReport(id);
+    if (!row) return sendJson(res, 404, { error: "报告不存在" });
+    const html = marked.parse(row.markdown, {
+      gfm: true,
+      headerIds: false,
+      mangle: false,
+    });
+    sendJson(res, 200, { ...row, html });
     return;
   }
 

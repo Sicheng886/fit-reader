@@ -12,6 +12,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "fit-file-parser": "^3.0.2"
+    "fit-file-parser": "^3.0.2",
+    "marked": "^18.0.6"
   }
 }

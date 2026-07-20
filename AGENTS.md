@@ -12,7 +12,7 @@
 ## 技术栈与运行方式
 
 - **运行时**：Node.js（已在 v22.20.0 上验证），**ESM（ECMAScript Modules）**（`package.json` 中 `"type": "module"`，源码使用 `import`/`export` 语法），零构建、零转译。
-- **唯一依赖**：`fit-file-parser`（^3.0.2）。⚠️ 注意**不是** `fit-parser`（同名不相干的包）。
+- **唯一依赖**：`fit-file-parser`（解析 `.fit`）和 `marked`（AI 报告 Markdown 转 HTML），均通过 `npm install` 安装。
 - **关键配置**：`package.json`（`main: index.js`，脚本 `npm test` 运行 node:test 回归测试，`npm run analysis` 批量分析+趋势图）。
 
 ### 命令
@@ -59,9 +59,9 @@ node index.js input/MAGENE_C506SE_2026-07-17_202219_1273797.fit output/
 - `settings.js`：全部可调配置（骑手参数、分区、算法阈值），纯数据、无逻辑。
 - `db.js`：训练库模块。基于 Node 内置 `node:sqlite`（≥22.5，零第三方依赖），数据库默认 `./db/fitness.db`（可用环境变量 `FIT_DB_PATH` 覆盖，供测试隔离；懒打开，目录/表不存在时自动创建）；提供 `upsertActivity`（按文件名去重）、`computeForm`（CTL/ATL/TSB 指数加权）、`monthlySummary`（逐月汇总与强度分类）、`trendMonthly`（逐月趋势数据）、`recentFormDaily`（最近 N 天逐日 form 序列）、`recentActivities`（近期训练简明清单，供提示词上下文）、`listActivities` / `getActivitySummary`（Web 界面列表与详情查询）、`closeDb`（测试收尾释放句柄）。
 - `prompts.js`：AI 提示词模板库（P2）。`buildMetricGlossary()` 由 settings.js 动态生成指标口径说明；`buildReviewPrompt` / `buildPlanPrompt` / `buildTaperPrompt` / `buildComparePrompt` 四个场景模板拼装完整 Markdown（角色+口径+数据+固化问题清单）；`thinToWeekly()` 把逐日 form 序列抽稀为逐周点。纯函数、无 IO。
-- `ai.js`：AI API 客户端（P4）。OpenAI 兼容 chat/completions（Node 内置 fetch，零依赖）；环境变量 `FIT_AI_API_KEY`（必填）/ `FIT_AI_BASE_URL`（默认 Kimi `https://api.moonshot.cn/v1`）/ `FIT_AI_MODEL`（默认 `moonshot-v1-32k`）/ `FIT_AI_TEMPERATURE`（可选，缺省不传）/ `FIT_AI_TIMEOUT_MS`（默认 5 分钟）/ `FIT_AI_STREAM`（是否启用流式，默认 false）/ `FIT_AI_STALL_MS`（流式空闲超时，默认 60s）；配置项调用时惰性读取，`.env` 由 server.js 入口通过 Node 内置 `process.loadEnvFile()` 注入（仅入口分支加载，测试 import 时不触发）；`isAiConfigured()` 供调用方判断退化为复制提示词模式。默认非流式 + 30 秒心跳日志，避免某些模型/账号先把整段响应生成完再下发造成的"假死"感觉。
-- `server.js`：Web 服务（P4，`npm run web`）。Node 内置 http，零依赖；静态托管 `web/` 前端 + REST API（`/api/overview` 仪表盘聚合、`/api/activity`、`/api/records` 时序抽稀 ≤1400 点、`POST /api/upload` 原始字节上传 FIT 即分析入库、`POST /api/ai` 四场景 AI 报告/提示词）；文件名参数一律 basename 防路径穿越；输出/输入目录可用 `FIT_OUTPUT_DIR` / `FIT_INPUT_DIR` 覆盖（测试隔离）。
-- `web/`：纯 HTML/CSS/JS SPA（P4），零依赖零构建：hash 路由（概览/训练/详情/上传/AI 分析）、手写 SVG 图表（多系列时序图各系列独立纵轴、CTL/ATL/TSB 趋势、分区分布、峰功率曲线）、极简 Markdown 渲染器；暗色平面科技运动风（荧光黄 volt 主色 + 斜切元素 + 等宽斜体大数字）。
+- `ai.js`：AI API 客户端（P4）。OpenAI 兼容 chat/completions（Node 内置 fetch；Markdown 转 HTML 由 server.js 用 `marked` 处理，ai.js 本身不依赖 marked）；环境变量 `FIT_AI_API_KEY`（必填）/ `FIT_AI_BASE_URL`（默认 Kimi `https://api.moonshot.cn/v1`）/ `FIT_AI_MODEL`（默认 `moonshot-v1-32k`）/ `FIT_AI_TEMPERATURE`（可选，缺省不传）/ `FIT_AI_TIMEOUT_MS`（默认 5 分钟）/ `FIT_AI_STREAM`（是否启用流式，默认 false）/ `FIT_AI_STALL_MS`（流式空闲超时，默认 60s）；配置项调用时惰性读取，`.env` 由 server.js 入口通过 Node 内置 `process.loadEnvFile()` 注入（仅入口分支加载，测试 import 时不触发）；`isAiConfigured()` 供调用方判断退化为复制提示词模式。默认非流式 + 30 秒心跳日志。
+- `server.js`：Web 服务（P4，`npm run web`）。Node 内置 http，零依赖；静态托管 `web/` 前端 + REST API（`/api/overview` 仪表盘聚合、`/api/activity`、`/api/records` 时序抽稀 ≤1400 点、`POST /api/upload` 原始字节上传 FIT 即分析入库、`POST /api/ai` 四场景 AI 报告/提示词、返回 `marked` 渲染后的 HTML、保存到 `ai_reports` 表并保留每 mode 最近 10 条、`GET /api/ai/reports`、`GET /api/ai/report`）；文件名参数一律 basename 防路径穿越；输出/输入目录可用 `FIT_OUTPUT_DIR` / `FIT_INPUT_DIR` 覆盖（测试隔离）。
+- `web/`：纯 HTML/CSS/JS SPA（P4），零依赖零构建：hash 路由（概览/训练/详情/上传/AI 分析）、手写 SVG 图表（多系列时序图各系列独立纵轴、CTL/ATL/TSB 趋势、分区分布、峰功率曲线）；AI 报告使用服务端 `marked` 渲染后的 HTML，并支持历史报告列表（每 mode 最近 10 条）；暗色平面科技运动风（荧光黄 volt 主色 + 斜切元素 + 等宽斜体大数字）。
 - `index.js`（约 800 行）：主脚本，内部组织为：
 
 | 区块 | 内容 |
@@ -97,7 +97,7 @@ node index.js input/MAGENE_C506SE_2026-07-17_202219_1273797.fit output/
 - `test/make_test_fit.mjs`：手写 FIT 二进制生成器（文件头/定义消息/数据消息/CRC-16），可生成骑行（含功率缺失/记录缺失/无时间戳坏记录/开发者字段）、跑步、游泳（length 消息）合成文件；也可直接 `node test/make_test_fit.mjs [目录]` 生成样例。
 - `test/unit.test.mjs`：指标算法纯函数单测（NP/peakAvg/分区/爬升去抖/间歇识别/心率漂移/FTP 估算/缺失检测/开发者字段）。
 - `test/e2e.test.mjs`：端到端回归——合成 FIT → `analyzeFile` → 校验 CSV 行数与 summary 指标；训练库通过 `FIT_DB_PATH` 指向临时目录与真实库隔离（**必须在 import index.js 之前设置该环境变量**，db.js 在模块加载时定路径）。
-- `test/web.test.mjs`：Web 服务端到端——合成 FIT → `POST /api/upload` → 校验概览/详情/时序/AI 提示词接口与路径穿越防护；同样用 `FIT_DB_PATH` / `FIT_OUTPUT_DIR` / `FIT_INPUT_DIR` 指向临时目录隔离（须在 import server.js 前设置），收尾先 `closeDb()` 释放 SQLite 句柄再删临时目录（Windows 文件锁）。
+- `test/web.test.mjs`：Web 服务端到端——合成 FIT → `POST /api/upload` → 校验概览/详情/时序/AI 提示词接口与路径穿越防护；同时直接调用 `saveAiReport` / `listAiReports` / `getAiReport` 验证 AI 缓存表 10 条滚动限制；同样用 `FIT_DB_PATH` / `FIT_OUTPUT_DIR` / `FIT_INPUT_DIR` 指向临时目录隔离（须在 import server.js 前设置），收尾先 `closeDb()` 释放 SQLite 句柄再删临时目录（Windows 文件锁）。
 
 修改指标算法后：① 跑 `npm test`；② 用 `input/` 下的真实 FIT 文件重跑批量分析做端到端验证；涉及训练库的改动还需验证 `--monthly` / `--trend` 与删库自动重建（`rm -rf db` 后重跑分析）。
 
