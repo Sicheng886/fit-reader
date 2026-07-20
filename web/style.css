@@ -1,0 +1,551 @@
+/**
+ * fit-reader Web 界面样式（P4）
+ * 设计语言：深色平面科技风 + 运动元素
+ *  - 纯平面卡片（无投影），1px 细描边，硬朗小圆角
+ *  - 荧光黄（volt）主色 + 青色辅助，竞技感强
+ *  - 等宽数字（tabular-nums）、大字号斜体关键指标（赛车仪表风）
+ *  - 大写字距小标签、斜切条纹点缀
+ */
+
+:root {
+  --bg: #0a0d11;
+  --bg-soft: #0e1318;
+  --panel: #131920;
+  --panel-2: #182029;
+  --line: #242e38;
+  --line-soft: #1c242d;
+  --text: #e9eef4;
+  --muted: #8d9aa8;
+  --faint: #5c6a78;
+  --volt: #d7ff3f;
+  --volt-dim: rgba(215, 255, 63, 0.14);
+  --cyan: #3fd6f5;
+  --blue: #5aa2ff;
+  --red: #ff5d73;
+  --green: #3ddc97;
+  --orange: #ffb03f;
+  --font: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --mono: "Cascadia Mono", "JetBrains Mono", Consolas, monospace;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html { color-scheme: dark; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 14px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---------------- 顶栏 ---------------- */
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 28px;
+  padding: 0 28px;
+  height: 60px;
+  background: rgba(10, 13, 17, 0.92);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 17px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  font-style: italic;
+  white-space: nowrap;
+}
+.brand b { color: var(--volt); font-weight: 800; }
+.brand-mark {
+  width: 22px;
+  height: 22px;
+  background: repeating-linear-gradient(
+    -45deg,
+    var(--volt) 0 3px,
+    transparent 3px 6px
+  );
+  transform: skewX(-12deg);
+}
+
+.tabs { display: flex; gap: 4px; height: 100%; }
+.tab {
+  appearance: none;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  padding: 0 16px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+.tab:hover { color: var(--text); }
+.tab.active { color: var(--volt); border-bottom-color: var(--volt); }
+
+.athlete-chip {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--faint);
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+.athlete-chip b { color: var(--muted); }
+
+/* ---------------- 布局与通用组件 ---------------- */
+
+main {
+  max-width: 1160px;
+  margin: 0 auto;
+  padding: 28px 28px 80px;
+}
+
+.view-title {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  margin-bottom: 22px;
+}
+.view-title h1 {
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  font-style: italic;
+  text-transform: uppercase;
+}
+.view-title .sub { color: var(--faint); font-size: 13px; }
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  padding: 20px;
+  margin-bottom: 20px;
+}
+.panel-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--faint);
+  margin-bottom: 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.panel-title::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line-soft);
+}
+
+.btn {
+  appearance: none;
+  background: var(--volt);
+  border: none;
+  color: #10130a;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  padding: 10px 22px;
+  border-radius: 4px;
+  cursor: pointer;
+  transform: skewX(-8deg);
+  transition: filter 0.15s;
+}
+.btn > span { display: inline-block; transform: skewX(8deg); }
+.btn:hover { filter: brightness(1.12); }
+.btn:disabled { opacity: 0.45; cursor: default; }
+.btn.ghost {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--text);
+}
+.btn.ghost:hover { border-color: var(--volt); color: var(--volt); }
+
+select, input[type="date"], input[type="file"] {
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  padding: 8px 12px;
+  border-radius: 4px;
+  outline: none;
+}
+select:focus, input:focus { border-color: var(--volt); }
+
+.muted { color: var(--muted); }
+.mono { font-family: var(--mono); }
+.empty {
+  padding: 48px 20px;
+  text-align: center;
+  color: var(--faint);
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+}
+
+/* ---------------- 仪表盘 ---------------- */
+
+.hero-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+  margin-bottom: 20px;
+}
+.hero-tile {
+  position: relative;
+  background: var(--panel);
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  padding: 18px 20px 16px;
+  overflow: hidden;
+}
+.hero-tile::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: var(--tile-color, var(--volt));
+}
+.hero-tile .label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.24em;
+  color: var(--faint);
+  text-transform: uppercase;
+}
+.hero-tile .value {
+  font-family: var(--mono);
+  font-size: 44px;
+  font-weight: 700;
+  font-style: italic;
+  line-height: 1.15;
+  color: var(--tile-color, var(--text));
+  font-variant-numeric: tabular-nums;
+}
+.hero-tile .value small { font-size: 16px; color: var(--faint); font-style: normal; }
+.hero-tile .note { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+/* ---------------- 指标网格 ---------------- */
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 1px;
+  background: var(--line-soft);
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  overflow: hidden;
+  margin-bottom: 20px;
+}
+.metric {
+  background: var(--panel);
+  padding: 14px 16px 12px;
+}
+.metric .m-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--faint);
+  white-space: nowrap;
+}
+.metric .m-value {
+  font-family: var(--mono);
+  font-size: 24px;
+  font-weight: 700;
+  font-style: italic;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.3;
+}
+.metric .m-value .unit { font-size: 12px; color: var(--faint); font-style: normal; margin-left: 3px; }
+.metric .m-sub { font-size: 11px; color: var(--muted); }
+
+/* ---------------- 训练列表 ---------------- */
+
+.act-list { display: flex; flex-direction: column; gap: 8px; }
+.act-row {
+  display: grid;
+  grid-template-columns: 86px 1fr repeat(5, auto);
+  align-items: center;
+  gap: 18px;
+  background: var(--panel);
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  padding: 12px 18px;
+  cursor: pointer;
+  text-decoration: none;
+  color: inherit;
+  transition: border-color 0.15s, background 0.15s;
+}
+.act-row:hover { border-color: var(--volt); background: var(--panel-2); }
+.act-date { font-family: var(--mono); font-size: 13px; color: var(--muted); }
+.act-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.act-stat { text-align: right; min-width: 64px; }
+.act-stat .v { font-family: var(--mono); font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.act-stat .k { font-size: 10px; letter-spacing: 0.14em; color: var(--faint); text-transform: uppercase; }
+
+.sport-badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: 3px;
+  transform: skewX(-8deg);
+  background: var(--volt-dim);
+  color: var(--volt);
+  vertical-align: middle;
+  margin-right: 8px;
+}
+.sport-badge.running { background: rgba(63, 214, 245, 0.14); color: var(--cyan); }
+.sport-badge.swimming { background: rgba(90, 162, 255, 0.16); color: var(--blue); }
+
+/* ---------------- 分区分布条 ---------------- */
+
+.zone-bars { display: flex; flex-direction: column; gap: 6px; }
+.zone-row {
+  display: grid;
+  grid-template-columns: 34px 1fr 52px;
+  align-items: center;
+  gap: 12px;
+}
+.zone-row .z-name { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+.zone-row .z-track { height: 14px; background: var(--bg-soft); border-radius: 2px; overflow: hidden; }
+.zone-row .z-fill { height: 100%; border-radius: 2px; transform: skewX(-12deg); transform-origin: left; }
+.zone-row .z-pct { font-family: var(--mono); font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; }
+
+/* ---------------- 峰功率曲线 ---------------- */
+
+.peak-curve { display: flex; align-items: flex-end; gap: 18px; height: 150px; padding-top: 8px; }
+.peak-col { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 6px; height: 100%; justify-content: flex-end; }
+.peak-col .p-val { font-family: var(--mono); font-size: 13px; font-weight: 700; }
+.peak-col .p-bar {
+  width: 100%;
+  max-width: 72px;
+  background: linear-gradient(180deg, var(--volt), rgba(215, 255, 63, 0.25));
+  border-radius: 3px 3px 0 0;
+  transform: skewX(-6deg);
+}
+.peak-col .p-label { font-size: 11px; color: var(--faint); letter-spacing: 0.1em; }
+
+/* ---------------- 图表 ---------------- */
+
+.chart-wrap { position: relative; }
+.chart-legend { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.legend-chip {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 10px;
+  cursor: pointer;
+  opacity: 1;
+  transition: opacity 0.15s;
+}
+.legend-chip.off { opacity: 0.35; }
+.legend-chip .dot { width: 10px; height: 3px; border-radius: 1px; }
+.legend-chip .avg { color: var(--faint); font-family: var(--mono); font-size: 11px; }
+
+svg.chart { display: block; width: 100%; height: auto; }
+svg.chart text { fill: var(--faint); font-size: 10px; font-family: var(--mono); }
+svg.chart .grid { stroke: var(--line-soft); stroke-width: 1; }
+svg.chart .axis-zero { stroke: var(--line); stroke-dasharray: 4 4; }
+
+/* ---------------- 表格 ---------------- */
+
+.data-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.data-table th {
+  text-align: left;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--faint);
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+}
+.data-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line-soft);
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+.data-table tr:last-child td { border-bottom: none; }
+.data-table td:first-child { font-family: var(--font); font-weight: 600; }
+
+.intensity-stack { display: flex; height: 10px; border-radius: 2px; overflow: hidden; min-width: 120px; }
+.intensity-stack span { display: block; height: 100%; }
+
+/* ---------------- 上传 ---------------- */
+
+.dropzone {
+  border: 2px dashed var(--line);
+  border-radius: 10px;
+  padding: 64px 32px;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+  background:
+    repeating-linear-gradient(-45deg, transparent 0 14px, rgba(255,255,255,0.012) 14px 28px);
+}
+.dropzone:hover, .dropzone.dragover { border-color: var(--volt); background-color: var(--volt-dim); }
+.dropzone .dz-icon { font-size: 34px; margin-bottom: 12px; color: var(--volt); font-style: italic; font-weight: 800; }
+.dropzone .dz-main { font-size: 16px; font-weight: 700; margin-bottom: 6px; }
+.dropzone .dz-sub { color: var(--faint); font-size: 13px; }
+.upload-status { margin-top: 16px; font-family: var(--mono); font-size: 13px; }
+.upload-status.ok { color: var(--green); }
+.upload-status.err { color: var(--red); }
+
+/* ---------------- AI 报告 ---------------- */
+
+.ai-controls {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 16px;
+  margin-bottom: 20px;
+}
+.ai-card {
+  background: var(--panel);
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.ai-card h3 { font-size: 14px; font-weight: 800; letter-spacing: 0.08em; font-style: italic; }
+.ai-card p { font-size: 12px; color: var(--faint); flex: 1; }
+
+.ai-result { font-size: 14px; }
+.ai-result h1, .ai-result h2, .ai-result h3, .ai-result h4 {
+  margin: 20px 0 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+.ai-result h1 { font-size: 20px; }
+.ai-result h2 { font-size: 17px; color: var(--volt); }
+.ai-result h3 { font-size: 15px; }
+.ai-result p { margin: 8px 0; color: #cfd8e0; }
+.ai-result ul, .ai-result ol { margin: 8px 0 8px 22px; color: #cfd8e0; }
+.ai-result li { margin: 4px 0; }
+.ai-result strong { color: var(--text); }
+.ai-result code {
+  font-family: var(--mono);
+  font-size: 12px;
+  background: var(--bg-soft);
+  padding: 1px 6px;
+  border-radius: 3px;
+  color: var(--cyan);
+}
+.ai-result pre {
+  background: var(--bg-soft);
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  padding: 14px;
+  overflow-x: auto;
+  margin: 10px 0;
+}
+.ai-result pre code { background: none; padding: 0; color: var(--muted); }
+.ai-result blockquote {
+  border-left: 3px solid var(--volt);
+  padding-left: 14px;
+  color: var(--muted);
+  margin: 10px 0;
+}
+
+.prompt-box {
+  background: var(--bg-soft);
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  padding: 16px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 480px;
+  overflow-y: auto;
+}
+
+.callout {
+  border: 1px solid var(--orange);
+  border-left-width: 4px;
+  background: rgba(255, 176, 63, 0.07);
+  border-radius: 6px;
+  padding: 12px 16px;
+  margin-bottom: 20px;
+  font-size: 13px;
+  color: var(--orange);
+}
+.callout.info { border-color: var(--cyan); background: rgba(63, 214, 245, 0.07); color: var(--cyan); }
+
+.anomaly-list { list-style: none; }
+.anomaly-list li {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--orange);
+  padding: 4px 0;
+  border-bottom: 1px dashed var(--line-soft);
+}
+.anomaly-list li:last-child { border-bottom: none; }
+
+.loading {
+  display: inline-block;
+  font-family: var(--mono);
+  color: var(--volt);
+  animation: pulse 1s ease-in-out infinite;
+}
+@keyframes pulse { 50% { opacity: 0.35; } }
+
+.detail-head {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 22px;
+}
+.detail-head h1 { font-size: 20px; font-weight: 800; font-style: italic; letter-spacing: 0.04em; }
+.back-link {
+  color: var(--faint);
+  text-decoration: none;
+  font-size: 13px;
+  letter-spacing: 0.08em;
+}
+.back-link:hover { color: var(--volt); }
+.detail-head .spacer { flex: 1; }
+
+@media (max-width: 860px) {
+  .hero-grid { grid-template-columns: 1fr; }
+  .act-row { grid-template-columns: 1fr; gap: 6px; }
+  .topbar { gap: 12px; padding: 0 14px; }
+  .athlete-chip { display: none; }
+  main { padding: 18px 14px 60px; }
+}

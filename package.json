@@ -6,7 +6,8 @@
   "main": "index.js",
   "scripts": {
     "analysis": "node index.js input/ output/ && node index.js --trend",
-    "test": "node --test \"test/*.test.mjs\""
+    "test": "node --test \"test/*.test.mjs\"",
+    "web": "node server.js"
   },
   "author": "",
   "license": "ISC",

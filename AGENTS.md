@@ -28,8 +28,11 @@ node index.js <目录> [输出目录]
 # 快捷脚本：批量分析 input/ → output/ 并自动重新生成趋势图
 npm run analysis
 
-# 运行回归测试（指标算法单测 + 合成 FIT 端到端，训练库用 FIT_DB_PATH 隔离）
+# 运行回归测试（指标算法单测 + 合成 FIT 端到端 + Web 服务端到端，训练库用 FIT_DB_PATH 隔离）
 npm test
+
+# Web 界面（P4）：本地服务 + 浏览器仪表盘
+npm run web            # 默认 http://localhost:3000，PORT 环境变量可改端口
 
 # 训练库查询（基于 ./db/fitness.db）
 node index.js --monthly [月数=6]              # 逐月训练汇总
@@ -54,8 +57,11 @@ node index.js input/MAGENE_C506SE_2026-07-17_202219_1273797.fit output/
 ## 代码结构
 
 - `settings.js`：全部可调配置（骑手参数、分区、算法阈值），纯数据、无逻辑。
-- `db.js`：训练库模块。基于 Node 内置 `node:sqlite`（≥22.5，零第三方依赖），数据库默认 `./db/fitness.db`（可用环境变量 `FIT_DB_PATH` 覆盖，供测试隔离；懒打开，目录/表不存在时自动创建）；提供 `upsertActivity`（按文件名去重）、`computeForm`（CTL/ATL/TSB 指数加权）、`monthlySummary`（逐月汇总与强度分类）、`trendMonthly`（逐月趋势数据）、`recentFormDaily`（最近 N 天逐日 form 序列）、`recentActivities`（近期训练简明清单，供提示词上下文）。
+- `db.js`：训练库模块。基于 Node 内置 `node:sqlite`（≥22.5，零第三方依赖），数据库默认 `./db/fitness.db`（可用环境变量 `FIT_DB_PATH` 覆盖，供测试隔离；懒打开，目录/表不存在时自动创建）；提供 `upsertActivity`（按文件名去重）、`computeForm`（CTL/ATL/TSB 指数加权）、`monthlySummary`（逐月汇总与强度分类）、`trendMonthly`（逐月趋势数据）、`recentFormDaily`（最近 N 天逐日 form 序列）、`recentActivities`（近期训练简明清单，供提示词上下文）、`listActivities` / `getActivitySummary`（Web 界面列表与详情查询）、`closeDb`（测试收尾释放句柄）。
 - `prompts.js`：AI 提示词模板库（P2）。`buildMetricGlossary()` 由 settings.js 动态生成指标口径说明；`buildReviewPrompt` / `buildPlanPrompt` / `buildTaperPrompt` / `buildComparePrompt` 四个场景模板拼装完整 Markdown（角色+口径+数据+固化问题清单）；`thinToWeekly()` 把逐日 form 序列抽稀为逐周点。纯函数、无 IO。
+- `ai.js`：AI API 客户端（P4）。OpenAI 兼容 chat/completions（Node 内置 fetch，零依赖）；环境变量 `FIT_AI_API_KEY`（必填）/ `FIT_AI_BASE_URL`（默认 Kimi `https://api.moonshot.cn/v1`）/ `FIT_AI_MODEL`（默认 `moonshot-v1-32k`）；`isAiConfigured()` 供调用方判断退化为复制提示词模式。
+- `server.js`：Web 服务（P4，`npm run web`）。Node 内置 http，零依赖；静态托管 `web/` 前端 + REST API（`/api/overview` 仪表盘聚合、`/api/activity`、`/api/records` 时序抽稀 ≤1400 点、`POST /api/upload` 原始字节上传 FIT 即分析入库、`POST /api/ai` 四场景 AI 报告/提示词）；文件名参数一律 basename 防路径穿越；输出/输入目录可用 `FIT_OUTPUT_DIR` / `FIT_INPUT_DIR` 覆盖（测试隔离）。
+- `web/`：纯 HTML/CSS/JS SPA（P4），零依赖零构建：hash 路由（概览/训练/详情/上传/AI 分析）、手写 SVG 图表（多系列时序图各系列独立纵轴、CTL/ATL/TSB 趋势、分区分布、峰功率曲线）、极简 Markdown 渲染器；暗色平面科技运动风（荧光黄 volt 主色 + 斜切元素 + 等宽斜体大数字）。
 - `index.js`（约 800 行）：主脚本，内部组织为：
 
 | 区块 | 内容 |
@@ -91,13 +97,14 @@ node index.js input/MAGENE_C506SE_2026-07-17_202219_1273797.fit output/
 - `test/make_test_fit.mjs`：手写 FIT 二进制生成器（文件头/定义消息/数据消息/CRC-16），可生成骑行（含功率缺失/记录缺失/无时间戳坏记录/开发者字段）、跑步、游泳（length 消息）合成文件；也可直接 `node test/make_test_fit.mjs [目录]` 生成样例。
 - `test/unit.test.mjs`：指标算法纯函数单测（NP/peakAvg/分区/爬升去抖/间歇识别/心率漂移/FTP 估算/缺失检测/开发者字段）。
 - `test/e2e.test.mjs`：端到端回归——合成 FIT → `analyzeFile` → 校验 CSV 行数与 summary 指标；训练库通过 `FIT_DB_PATH` 指向临时目录与真实库隔离（**必须在 import index.js 之前设置该环境变量**，db.js 在模块加载时定路径）。
+- `test/web.test.mjs`：Web 服务端到端——合成 FIT → `POST /api/upload` → 校验概览/详情/时序/AI 提示词接口与路径穿越防护；同样用 `FIT_DB_PATH` / `FIT_OUTPUT_DIR` / `FIT_INPUT_DIR` 指向临时目录隔离（须在 import server.js 前设置），收尾先 `closeDb()` 释放 SQLite 句柄再删临时目录（Windows 文件锁）。
 
 修改指标算法后：① 跑 `npm test`；② 用 `input/` 下的真实 FIT 文件重跑批量分析做端到端验证；涉及训练库的改动还需验证 `--monthly` / `--trend` 与删库自动重建（`rm -rf db` 后重跑分析）。
 
 ## 已知注意事项
 
 - **README 与实际代码的偏差已修复**：入口文件为 `index.js`，配置在 `settings.js`；README 早期规划的 `make_test_fit.py` 已以 `test/make_test_fit.mjs`（JS 手写 FIT 二进制生成器）落地。
-- README 中包含一份很长的功能路线图（P0–P4），**P0 已全部完成**（批量处理、FTP 自动估算、间歇识别、爬坡段提取、踏频-功率联合分析），**P1 已全部完成**（SQLite 训练库、CTL/ATL/TSB 写入 `athlete_context`、月汇总 `--monthly`、趋势图 `--trend`；因训练频率低，路线图的“周汇总”落地为月汇总），**P2 已全部完成**（提示词模板库 `prompts.js` + 四个提示词命令 `--review`/`--plan`/`--taper`/`--compare`，只生成文本供复制，调 API 属 P4），**P3 已全部完成**（跑步/游泳适配、开发者字段统计、损坏文件缺失计数、`test/` 下合成 FIT 生成器 + node:test 回归测试）。实现新功能前先看是否已在路线图中、应归入哪个优先级，完成后勾选对应条目。
+- README 中包含一份很长的功能路线图（P0–P4），**P0 已全部完成**（批量处理、FTP 自动估算、间歇识别、爬坡段提取、踏频-功率联合分析），**P1 已全部完成**（SQLite 训练库、CTL/ATL/TSB 写入 `athlete_context`、月汇总 `--monthly`、趋势图 `--trend`；因训练频率低，路线图的“周汇总”落地为月汇总），**P2 已全部完成**（提示词模板库 `prompts.js` + 四个提示词命令 `--review`/`--plan`/`--taper`/`--compare`，只生成文本供复制，调 API 属 P4），**P3 已全部完成**（跑步/游泳适配、开发者字段统计、损坏文件缺失计数、`test/` 下合成 FIT 生成器 + node:test 回归测试），**P4 已落地 AI API 对接与 Web 界面**（`ai.js` OpenAI 兼容客户端 + `server.js`/`web/` 本地 Web 应用；TrainingPeaks/intervals.icu 对接未做）。实现新功能前先看是否已在路线图中、应归入哪个优先级，完成后勾选对应条目。
 - **海拔单位隐藏 bug 已修复**（P3 过程中发现）：解析器按 `lengthUnit: "km"` 会把海拔/爬升缩放成 km，此前海拔输出与爬坡检测被压低 1000 倍（MAGENE 海拔恒 0 故从未暴露），现已统一换回米。
 - 没有 CI、没有部署流程——这是一个纯本地脚本项目（git 仅用于本地版本控制）。
 - 项目源码统一使用 ESM（`.js` + `"type": "module"`），`fit-file-parser` 为 CommonJS 包，通过默认导入（`import FitParser from "fit-file-parser"`）由 Node 的 CJS-ESM 互操作处理。

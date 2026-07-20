@@ -43,6 +43,14 @@ function openDb() {
   return _db;
 }
 
+/** 关闭数据库句柄（测试清理临时库文件前调用；生产路径无需调用） */
+export function closeDb() {
+  if (_db) {
+    _db.close();
+    _db = null;
+  }
+}
+
 /** 分析结果入库：同一文件名重复分析时覆盖更新 */
 export function upsertActivity(fileName, summary) {
   const db = openDb();
@@ -146,6 +154,45 @@ export function recentFormDaily(days = 56) {
     return { date: d.date, tss: r1(d.tss), ctl: r1(ctl), atl: r1(atl), tsb: r1(ctl - atl) };
   });
   return daily.slice(-days);
+}
+
+/** 训练清单（含文件名/运动类型，供 Web 界面列表展示，按日期倒序） */
+export function listActivities(n = 200) {
+  const db = openDb();
+  const rows = db
+    .prepare(
+      `SELECT file_name, date, sport, duration_sec, distance_km, elevation_gain_m,
+              tss, np, avg_power, intensity_factor
+       FROM activities ORDER BY date DESC LIMIT ?`,
+    )
+    .all(n);
+  const r1 = (x) => (x == null ? null : Math.round(x * 10) / 10);
+  return rows.map((r) => ({
+    file_name: r.file_name,
+    date: r.date,
+    sport: r.sport,
+    duration_sec: r.duration_sec,
+    distance_km: r1(r.distance_km),
+    elevation_gain_m: r.elevation_gain_m == null ? null : Math.round(r.elevation_gain_m),
+    tss: r.tss == null ? null : Math.round(r.tss),
+    np: r.np == null ? null : Math.round(r.np),
+    avg_power: r.avg_power == null ? null : Math.round(r.avg_power),
+    intensity_factor: r.intensity_factor == null ? null : r1(r.intensity_factor),
+  }));
+}
+
+/** 按文件名取单条训练的完整 summary JSON（Web 详情页用），不存在返回 null */
+export function getActivitySummary(fileName) {
+  const db = openDb();
+  const row = db
+    .prepare(`SELECT summary_json FROM activities WHERE file_name = ?`)
+    .get(fileName);
+  if (!row) return null;
+  try {
+    return JSON.parse(row.summary_json);
+  } catch {
+    return null;
+  }
 }
 
 /** 最近 n 条训练简明清单（供提示词上下文，按日期倒序） */

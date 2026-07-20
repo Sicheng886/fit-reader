@@ -30,9 +30,33 @@ node index.js --plan [周数=8] [输出.md]               # 周期规划（自�
 node index.js --taper <比赛日期> [输出.md]            # 赛前减量
 node index.js --compare <A.summary.json> <B.summary.json> [输出.md]  # 两次训练对比
 
-# 运行回归测试（指标算法单测 + 合成 FIT 端到端）
+# 运行回归测试（指标算法单测 + 合成 FIT 端到端 + Web 服务端到端）
 npm test
+
+# 启动 Web 界面（默认 http://localhost:3000，PORT 环境变量可改端口）
+npm run web
 ```
+
+### Web 界面（P4）
+
+`npm run web` 启动本地服务后浏览器打开 http://localhost:3000 ：
+
+- **概览**：CTL/ATL/TSB 大数字仪表 + 最近 90 天负荷趋势图 + 月度汇总 + 最近训练
+- **训练**：训练库全部记录列表；点进详情有时序曲线（功率/心率/踏频/海拔/速度，可开关系列）、分区分布、峰功率曲线、赛段/间歇/爬坡、数据质量
+- **上传**：拖拽 .fit 文件即分析入库（文件存 `input/`，结果写 `output/`）
+- **AI 分析**：单次复盘 / 周期规划 / 赛前减量 / 两次对比四种场景一键生成报告
+
+AI 直接出报告需配置环境变量（OpenAI 兼容接口，Kimi/OpenAI/DeepSeek 均可）：
+
+```bash
+# Windows PowerShell: $env:FIT_AI_API_KEY="sk-..."
+export FIT_AI_API_KEY="sk-..."                        # 必填
+export FIT_AI_BASE_URL="https://api.moonshot.cn/v1"   # 可选，默认 Kimi
+export FIT_AI_MODEL="moonshot-v1-32k"                 # 可选，复盘提示词较长建议 32k 上下文
+```
+
+未配置密钥时自动退化为 P2 模式：生成完整提示词 + 一键复制按钮，粘贴到任意 AI 即可。
+
 
 > 注意：依赖包是 `fit-file-parser`，**不是** `fit-parser`（同名不相干的包）。
 
@@ -142,13 +166,13 @@ export const ATHLETE = {
 
 ### P4 — 可选扩展
 
-- [ ] **对接 AI API**：直接调 OpenAI/Claude/Kimi API，输出 Markdown 复盘报告
-- [ ] **Web 界面**：上传 FIT → 展示图表 + AI 分析结果
+- [x] **对接 AI API**：`ai.js` 直接调 OpenAI 兼容接口（`FIT_AI_API_KEY`/`FIT_AI_BASE_URL`/`FIT_AI_MODEL`，默认 Kimi），输出 Markdown 复盘报告；未配置密钥时退化为复制提示词模式
+- [x] **Web 界面**：`npm run web`（`server.js` 零依赖 HTTP 服务 + `web/` 纯前端 SPA）——训练库仪表盘、训练详情图表、上传 FIT 分析、AI 分析结果展示
 - [ ] **对接 TrainingPeaks / intervals.icu**：对比其官方指标，校验自己的算法
 
 ## 验证状态
 
-`npm test` 全部通过：指标算法单元测试 + 合成 FIT 端到端回归（30 分钟模拟骑行含 60 秒功率缺失、损坏文件缺失计数、跑步配速、游泳 length、开发者字段），并定期用 `input/` 下真实码表文件做端到端验证。
+`npm test` 全部通过：指标算法单元测试 + 合成 FIT 端到端回归（30 分钟模拟骑行含 60 秒功率缺失、损坏文件缺失计数、跑步配速、游泳 length、开发者字段）+ Web 服务端到端（上传/概览/详情/时序/AI 提示词/路径安全），并定期用 `input/` 下真实码表文件做端到端验证。
 
 ## 文件清单
 
@@ -158,6 +182,10 @@ export const ATHLETE = {
 | `settings.js`          | 全部可调配置：骑手参数、分区定义、各分析算法阈值            |
 | `db.js`                | 训练库：SQLite 入库/去重、CTL/ATL/TSB 计算、月汇总与趋势数据 |
 | `prompts.js`           | AI 提示词模板库：复盘/规划/赛前/对比四种场景的提示词组装    |
+| `ai.js`                | AI API 客户端（P4）：OpenAI 兼容 chat/completions，默认 Kimi |
+| `server.js`            | Web 服务（P4）：零依赖 HTTP 服务 + REST API（`npm run web`） |
+| `web/`                 | Web 前端（P4）：纯 HTML/CSS/JS SPA，手写 SVG 图表，暗色运动风 |
 | `test/make_test_fit.mjs` | 测试工具：手写 FIT 二进制生成器（骑行/跑步/游泳/损坏场景） |
 | `test/unit.test.mjs`   | 指标算法纯函数单元测试（node:test）                          |
 | `test/e2e.test.mjs`    | 端到端回归：合成 FIT → analyzeFile → 校验 CSV + summary      |
+| `test/web.test.mjs`    | Web 服务端到端：上传/概览/详情/时序/AI 提示词/路径安全       |
