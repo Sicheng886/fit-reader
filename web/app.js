@@ -74,6 +74,7 @@ async function loadOverview(force = false) {
 
 /**
  * 通用多系列折线图（各系列独立纵轴缩放，图例显示均值）。
+ * 对可见序列做简单的中心移动平均平滑，减少采样抖动，让曲线更简洁。
  * series: [{ name, color, unit, points: [y|null...], x0: 起始时间戳秒, step: 秒/点 }]
  */
 function drawLineChart(container, series, { height = 280 } = {}) {
@@ -89,6 +90,18 @@ function drawLineChart(container, series, { height = 280 } = {}) {
   const step = visible[0].step ?? 1;
   const x = (i) => PL + (n === 1 ? iw / 2 : (i / (n - 1)) * iw);
 
+  // 简单的中心移动平均平滑，窗口半径根据数据长度自动调整，null 保留不跨 gap 填补
+  const smooth = (pts) => {
+    const radius = Math.max(1, Math.round(n / 400));
+    return pts.map((_, i) => {
+      let sum = 0, count = 0;
+      for (let j = Math.max(0, i - radius); j <= Math.min(n - 1, i + radius); j++) {
+        if (pts[j] != null) { sum += pts[j]; count++; }
+      }
+      return count > 0 ? sum / count : null;
+    });
+  };
+
   let svg = "";
   // 网格 + 时间刻度
   for (let g = 0; g <= 4; g++) {
@@ -102,7 +115,8 @@ function drawLineChart(container, series, { height = 280 } = {}) {
   }
 
   for (const s of visible) {
-    const vals = s.points.filter((v) => v != null);
+    const pts = smooth(s.points);
+    const vals = pts.filter((v) => v != null);
     let min = Math.min(...vals), max = Math.max(...vals);
     if (min === max) { min -= 1; max += 1; }
     const pad = (max - min) * 0.08;
@@ -110,7 +124,7 @@ function drawLineChart(container, series, { height = 280 } = {}) {
     const y = (v) => PT + ((max - v) / (max - min)) * ih;
     // null 断段
     let d = "", pen = false;
-    s.points.forEach((v, i) => {
+    pts.forEach((v, i) => {
       if (v == null) { pen = false; return; }
       d += (pen ? "L" : "M") + `${x(i).toFixed(1)},${y(v).toFixed(1)}`;
       pen = true;
@@ -121,11 +135,11 @@ function drawLineChart(container, series, { height = 280 } = {}) {
         <stop offset="0" stop-color="${s.color}" stop-opacity="0.25"/>
         <stop offset="1" stop-color="${s.color}" stop-opacity="0"/></linearGradient></defs>`;
       // 面积图：把路径首尾补到底边（仅当无断段时，否则只画线）
-      if (!s.points.some((v) => v == null)) {
+      if (!pts.some((v) => v == null)) {
         svg += `<path d="${d}L${x(n - 1).toFixed(1)},${PT + ih}L${x(0).toFixed(1)},${PT + ih}Z" fill="url(#${gid})"/>`;
       }
     }
-    svg += `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="1.6" stroke-linejoin="round"/>`;
+    svg += `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/>`;
   }
   container.innerHTML = `<svg class="chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="height:${height}px">${svg}</svg>`;
 }
@@ -477,10 +491,34 @@ async function renderActivityDetail(name) {
   };
   redraw();
 
-  // AI 复盘
-  $("#btnAiReview").addEventListener("click", () =>
-    runAi({ mode: "review", file_name: name }, $("#aiPanel"), $("#aiBody")),
-  );
+  // AI 复盘：自动加载本训练缓存的最新 review 报告；没有则显示按钮，点击生成
+  const panel = $("#aiPanel"), body = $("#aiBody");
+  if (panel && body) {
+    try {
+      const reports = (await api(`/api/ai/reports?mode=review`)).reports
+        .filter((r) => r.file_name === name);
+      if (reports.length) {
+        const cached = await api(`/api/ai/report?id=${reports[0].id}`);
+        panel.style.display = "";
+        panel.querySelector(".panel-title").innerHTML =
+          `AI 复盘报告（已缓存 #${reports[0].id}）` +
+          `<button class="btn ghost" id="btnRegenReview" style="margin-left:auto"><span>重新生成</span></button>`;
+        body.innerHTML = `<div class="ai-result">${cached.html}</div>`;
+        $("#btnRegenReview").addEventListener("click", () =>
+          runAi({ mode: "review", file_name: name }, panel, body),
+        );
+      } else {
+        $("#btnAiReview").addEventListener("click", () =>
+          runAi({ mode: "review", file_name: name }, panel, body),
+        );
+      }
+    } catch (e) {
+      // 即使历史报告接口出错，也不影响训练详情主内容
+      $("#btnAiReview").addEventListener("click", () =>
+        runAi({ mode: "review", file_name: name }, panel, body),
+      );
+    }
+  }
 }
 
 function fmtPace(minPerKm) {
