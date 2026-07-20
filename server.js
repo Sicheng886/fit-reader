@@ -8,6 +8,8 @@
  *       GET  /api/activity?name=x.fit   单次训练完整 summary JSON
  *       GET  /api/records?name=x.fit    逐秒时序（抽稀到 ≤1400 点，供前端画图）
  *       POST /api/upload?filename=x.fit 上传 FIT（原始字节作 body）→ 分析并入库 → 返回 summary
+ *       GET  /api/ftp-estimate          基于最近窗口期骑行（功率峰曲线+心率交叉验证）科学估算 FTP
+ *       POST /api/ftp-apply             {ftp_w} 把估算 FTP 写回 settings.js 并立即生效
  *       POST /api/ai                    AI 报告：{mode:'review'|'plan'|'taper'|'compare', ...}
  *                                       未配置 FIT_AI_API_KEY 时返回提示词供手动复制
  *
@@ -32,6 +34,7 @@ import {
   recentFormDaily,
   recentActivities,
   computeForm,
+  cyclingSummariesSince,
 } from "./db.js";
 import {
   buildReviewPrompt,
@@ -41,12 +44,16 @@ import {
   thinToWeekly,
 } from "./prompts.js";
 import { callAI, isAiConfigured, aiConfigInfo } from "./ai.js";
-import { ATHLETE } from "./settings.js";
+import { ATHLETE, FTP_ESTIMATION } from "./settings.js";
+import { estimateFtpFromHistory } from "./ftp.js";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const WEB_DIR = path.join(ROOT, "web");
 const OUTPUT_DIR = path.resolve(process.env.FIT_OUTPUT_DIR || "output");
 const INPUT_DIR = path.resolve(process.env.FIT_INPUT_DIR || "input");
+const SETTINGS_PATH = path.resolve(
+  process.env.FIT_SETTINGS_PATH || path.join(ROOT, "settings.js"),
+);
 const PORT = Number(process.env.PORT) || 3000;
 
 const MIME = {
@@ -268,6 +275,43 @@ async function handleApi(req, res, url) {
     } catch (e) {
       sendJson(res, 502, { error: `AI 调用失败: ${e.message}`, prompt });
     }
+    return;
+  }
+
+  // GET /api/ftp-estimate  基于最近窗口期骑行（功率峰曲线+心率）科学估算 FTP
+  if (req.method === "GET" && url.pathname === "/api/ftp-estimate") {
+    const acts = cyclingSummariesSince(FTP_ESTIMATION.window_days);
+    sendJson(res, 200, estimateFtpFromHistory(acts, ATHLETE, FTP_ESTIMATION));
+    return;
+  }
+
+  // POST /api/ftp-apply  {ftp_w}  把估算出的 FTP 写回 settings.js 并立即生效
+  if (req.method === "POST" && url.pathname === "/api/ftp-apply") {
+    let body;
+    try {
+      body = JSON.parse((await readBody(req, 1024 * 1024)).toString("utf8"));
+    } catch {
+      return sendJson(res, 400, { error: "请求体需为 JSON" });
+    }
+    const ftpW = Number(body?.ftp_w);
+    if (
+      !Number.isFinite(ftpW) ||
+      ftpW < FTP_ESTIMATION.apply_min_w ||
+      ftpW > FTP_ESTIMATION.apply_max_w
+    ) {
+      return sendJson(res, 400, {
+        error: `ftp_w 需在 ${FTP_ESTIMATION.apply_min_w}–${FTP_ESTIMATION.apply_max_w}W 之间`,
+      });
+    }
+    const ftpInt = Math.round(ftpW);
+    const src = fs.readFileSync(SETTINGS_PATH, "utf8");
+    const replaced = src.replace(/ftp_watts:\s*\d+/, `ftp_watts: ${ftpInt}`);
+    if (replaced === src)
+      return sendJson(res, 500, { error: "settings.js 中未找到 ftp_watts 配置行" });
+    fs.writeFileSync(SETTINGS_PATH, replaced);
+    // 导出对象的属性可变：原地更新让当前进程立即生效（无需重启）
+    ATHLETE.ftp_watts = ftpInt;
+    sendJson(res, 200, { applied: true, ftp_w: ftpInt });
     return;
   }
 

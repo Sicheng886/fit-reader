@@ -286,14 +286,21 @@ async function renderDashboard() {
       <div class="note">${note ?? ""}</div>
     </div>`;
 
+  const a = ov.athlete || {};
   app.innerHTML = `
     <div class="view-title"><h1>负荷仪表盘</h1><span class="sub">CTL 体能 · ATL 疲劳 · TSB 状态（最近 90 天）</span></div>
     <div class="hero-grid">
       ${last ? heroTile("CTL · 体能", last.ctl, "#5aa2ff", "42 天指数加权，长期训练积累") : ""}
       ${last ? heroTile("ATL · 疲劳", last.atl, "#ff5d73", "7 天指数加权，近期疲劳程度") : ""}
       ${last ? heroTile("TSB · 状态", (last.tsb > 0 ? "+" : "") + last.tsb, "#3ddc97", formNote(last.tsb)) : ""}
+      <div class="hero-tile" style="--tile-color:#d7ff3f">
+        <div class="label">FTP · 阈值</div>
+        <div class="value" id="ftpTileValue">${a.ftp_watts ?? "-"}<small> W</small></div>
+        <div class="note"><button class="btn ghost sm" id="ftpEstBtn"><span>科学估算 FTP</span></button></div>
+      </div>
       ${!last ? `<div class="empty" style="grid-column:1/-1">训练库为空 — 到「上传」页导入第一个 FIT 文件</div>` : ""}
     </div>
+    <div id="ftpPanel"></div>
     <div class="panel">
       <div class="panel-title">负荷趋势（灰柱 = 每日 TSS）</div>
       <div class="chart-legend">
@@ -312,6 +319,118 @@ async function renderDashboard() {
       <div class="act-list">${(ov.activities || []).slice(0, 6).map(actRowHtml).join("") || `<div class="empty">暂无训练记录</div>`}</div>
     </div>`;
   drawTrendChart($("#trendChart"), daily);
+  $("#ftpEstBtn")?.addEventListener("click", runFtpEstimate);
+}
+
+// ---------------- FTP 科学估算（功率峰曲线 + 心率交叉验证） ----------------
+
+const CONF_LABEL = { high: "置信度 高", medium: "置信度 中", low: "置信度 低" };
+
+async function runFtpEstimate() {
+  const panel = $("#ftpPanel");
+  panel.innerHTML = `<div class="panel"><div class="empty loading">正在分析最近窗口期的功率与心率数据…</div></div>`;
+  try {
+    const r = await api("/api/ftp-estimate");
+    panel.innerHTML = ftpEstimateHtml(r);
+    $("#ftpApplyBtn")?.addEventListener("click", () => applyFtp(r.estimate.ftp_w));
+  } catch (e) {
+    panel.innerHTML = `<div class="panel"><div class="callout">FTP 估算失败：${esc(e.message)}</div></div>`;
+  }
+}
+
+function ftpEstimateHtml(r) {
+  const s = r.sample || {};
+  const sampleLine = `分析窗口：最近 ${r.window_days} 天 · 骑行 ${s.cycling_rides ?? 0} 次 · 有效功率样本 ${s.usable_power_rides ?? 0} 次 · 含心率 ${s.rides_with_hr ?? 0} 次`;
+  const needsHtml = r.data_needs?.length
+    ? `<div class="callout"><b>需要补充收集的数据：</b><ul class="ftp-list">${r.data_needs.map((d) => `<li>${esc(d)}</li>`).join("")}</ul></div>`
+    : "";
+  const notesHtml = r.notes?.length
+    ? `<div class="callout info"><b>数据质量与漂移提示：</b><ul class="ftp-list">${r.notes.map((n) => `<li>${esc(n)}</li>`).join("")}</ul></div>`
+    : "";
+  const refsHtml = r.references?.length
+    ? `<div class="muted ftp-refs">算法参照：${r.references.map(esc).join("；")}</div>`
+    : "";
+
+  if (r.status !== "ok" || !r.estimate) {
+    return `<div class="panel">
+      <div class="panel-title">FTP 科学估算 — 数据不足</div>
+      <div class="muted" style="margin-bottom:12px">${sampleLine}</div>
+      ${needsHtml}${notesHtml}${refsHtml}
+    </div>`;
+  }
+
+  const e = r.estimate;
+  const m = e.methods || {};
+  const diff = e.diff_w;
+  const diffTxt =
+    diff === 0 ? "与当前配置一致" : diff > 0 ? `比当前配置（${e.current_ftp_w}W）高 ${diff}W` : `比当前配置（${e.current_ftp_w}W）低 ${-diff}W`;
+  const cp = m.cp_model;
+  const cog = m.coggan_20min;
+  const hr = m.hr_check || {};
+  const zm = hr.zone_mismatch;
+  const methodRows = [
+    cp
+      ? `<tr><td>CP 临界功率模型</td><td>${cp.ftp_w}W</td><td class="muted">5min 峰 ${cp.p5.watts}W（${esc(cp.p5.date)}）+ 20min 峰 ${cp.p20.watts}W（${esc(cp.p20.date)}）→ CP ${cp.cp_w}W / W′ ${cp.w_prime_kj}kJ</td></tr>`
+      : `<tr><td>CP 临界功率模型</td><td>-</td><td class="muted">不可用（峰功率形态退化）</td></tr>`,
+    cog
+      ? `<tr><td>Coggan 20min × 0.95</td><td>${cog.ftp_w}W</td><td class="muted">20min 峰功率 ${cog.peak_20min_w}W（${esc(cog.date)}）</td></tr>`
+      : "",
+    `<tr><td>心率交叉验证</td><td>${
+      hr.maximal_effort == null ? "-" : hr.maximal_effort ? "全力 ✓" : "非全力 ⚠"
+    }</td><td class="muted">锚点骑行心率峰值 ${hr.best20_max_hr ?? "-"}bpm（全力阈值 ≥${hr.threshold_hr ?? "-"}bpm）${
+      zm ? `；功率/心率高强度占比 ${zm.power_high_pct}%/${zm.hr_high_pct}%` : ""
+    }${hr.median_hr_drift_pct != null ? `；心率漂移中位数 ${hr.median_hr_drift_pct}%` : ""}</td></tr>`,
+  ].join("");
+
+  const applyHtml =
+    diff === 0
+      ? ""
+      : e.confidence === "high"
+        ? `<button class="btn sm" id="ftpApplyBtn"><span>采纳 ${e.ftp_w}W 并写入 settings.js</span></button>`
+        : `<span class="muted">置信度不足，不建议写回 — 请先按下方清单补充数据后重新估算</span>`;
+
+  return `<div class="panel">
+    <div class="panel-title">FTP 科学估算</div>
+    <div class="muted" style="margin-bottom:16px">${sampleLine}</div>
+    <div class="ftp-result">
+      <div class="ftp-big">${e.ftp_w}<small> W</small></div>
+      <div class="ftp-meta">
+        <span class="conf-badge ${esc(e.confidence)}">${CONF_LABEL[e.confidence] ?? esc(e.confidence)}</span>
+        <span class="muted">${esc(e.confidence_note ?? "")}</span>
+      </div>
+      <div class="muted">参考区间 ${e.range_low}–${e.range_high}W · ${esc(diffTxt)}</div>
+      ${applyHtml}
+      <span class="ftp-applied muted" style="display:none">已写回 settings.js 并即时生效</span>
+    </div>
+    <table class="data-table" style="margin-top:16px">
+      <tr><th>方法</th><th>结果</th><th>依据</th></tr>
+      ${methodRows}
+    </table>
+    ${needsHtml}${notesHtml}${refsHtml}
+  </div>`;
+}
+
+async function applyFtp(ftpW) {
+  const btn = $("#ftpApplyBtn");
+  if (btn) btn.disabled = true;
+  try {
+    const r = await api("/api/ftp-apply", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ftp_w: ftpW }),
+    });
+    const a = state.overview?.athlete || {};
+    state.overview = null; // 概览缓存作废，下次加载取新 FTP
+    $("#athleteChip").innerHTML = `FTP <b>${r.ftp_w}W</b> · HRmax <b>${a.max_hr ?? "?"}</b> · <b>${a.weight_kg ?? "?"}kg</b>`;
+    if (btn) btn.style.display = "none";
+    const done = $(".ftp-applied");
+    if (done) done.style.display = "";
+    const tile = $("#ftpTileValue");
+    if (tile) tile.innerHTML = `${r.ftp_w}<small> W</small>`;
+  } catch (e) {
+    alert(`写回失败：${e.message}`);
+    if (btn) btn.disabled = false;
+  }
 }
 
 function monthlyTableHtml(months) {

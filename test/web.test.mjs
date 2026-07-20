@@ -17,11 +17,15 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "fit-web-test-"));
 process.env.FIT_DB_PATH = path.join(tmp, "test.db");
 process.env.FIT_OUTPUT_DIR = path.join(tmp, "output");
 process.env.FIT_INPUT_DIR = path.join(tmp, "input");
+// FTP 写回接口会改写 settings 文件：指向临时副本，隔离真实 settings.js
+const FAKE_SETTINGS = path.join(tmp, "settings.js");
+fs.copyFileSync(path.resolve("settings.js"), FAKE_SETTINGS);
+process.env.FIT_SETTINGS_PATH = FAKE_SETTINGS;
 delete process.env.FIT_AI_API_KEY; // 确保走"未配置→返回提示词"分支
 
 const { buildRideFit } = await import("./make_test_fit.mjs");
 const { createServer } = await import("../server.js");
-const { closeDb, saveAiReport, listAiReports, getAiReport } = await import("../db.js");
+const { closeDb, saveAiReport, listAiReports, getAiReport, upsertActivity } = await import("../db.js");
 
 let server, base;
 
@@ -149,4 +153,60 @@ test("AI 报告缓存：每个 mode 仅保留最近 10 条", () => {
   const latest = getAiReport(rows[0].id);
   assert.equal(latest.markdown, "report 12");
   assert.match(latest.prompt, /prompt/);
+});
+
+test("FTP 估算接口：基于训练库骑行返回双方法估值", async () => {
+  // 插入 3 次合成骑行（日期远离其他测试数据，独占估算窗口）
+  const mk = (name, date) =>
+    upsertActivity(name, {
+      activity: { date, sport: "cycling", duration_sec: 3600, distance_km: 30 },
+      power: {
+        avg: 130,
+        normalized_power: 130,
+        intensity_factor: 1.0,
+        tss: 100,
+        peak_curve: { "5min": 150, "20min": 130 },
+        zone_distribution_pct: { Z5: 5 },
+      },
+      heart_rate: { avg: 150, max: 180, zone_distribution_pct: { Z4: 5 }, hr_drift_pct: 2 },
+      data_quality: { power_coverage_pct: 100, hr_coverage_pct: 100 },
+    });
+  mk("ftp_a.fit", "2099-01-01");
+  mk("ftp_b.fit", "2099-01-02");
+  mk("ftp_c.fit", "2099-01-03");
+  const { status, data } = await getJson("/api/ftp-estimate");
+  assert.equal(status, 200);
+  assert.equal(data.status, "ok");
+  assert.equal(data.sample.usable_power_rides, 3);
+  // CP = (130×1200 − 150×300)/900 = 123；Coggan = 130×0.95 → 124
+  assert.equal(data.estimate.methods.cp_model.ftp_w, 123);
+  assert.equal(data.estimate.methods.coggan_20min.ftp_w, 124);
+  assert.equal(data.estimate.ftp_w, 124);
+  assert.equal(data.estimate.confidence, "high");
+  assert.ok(Array.isArray(data.data_needs));
+});
+
+test("FTP 写回接口：改写 settings 副本并进程内即时生效", async () => {
+  const resp = await fetch(base + "/api/ftp-apply", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ftp_w: 131 }),
+  });
+  assert.equal(resp.status, 200);
+  const data = await resp.json();
+  assert.deepEqual(data, { applied: true, ftp_w: 131 });
+  // 改写的是临时副本而非真实 settings.js
+  assert.match(fs.readFileSync(FAKE_SETTINGS, "utf8"), /ftp_watts: 131/);
+  // 进程内 ATHLETE 立即更新（概览接口可见）
+  const ov = await getJson("/api/overview");
+  assert.equal(ov.data.athlete.ftp_watts, 131);
+});
+
+test("FTP 写回接口：越界数值被拒绝", async () => {
+  const resp = await fetch(base + "/api/ftp-apply", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ftp_w: 10 }),
+  });
+  assert.equal(resp.status, 400);
 });

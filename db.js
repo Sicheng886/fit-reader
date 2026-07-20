@@ -289,6 +289,41 @@ export function recentActivities(n = 10) {
   }));
 }
 
+/**
+ * 最近 N 天内的骑行训练完整 summary（FTP 历史估算用，按日期倒序）。
+ * 仅返回 sport='cycling' 的记录；summary_json 损坏的行跳过。
+ */
+export function cyclingSummariesSince(days = 42) {
+  const db = openDb();
+  const row = db.prepare(`SELECT MAX(date) AS d FROM activities`).get();
+  if (!row?.d) return [];
+  const since = new Date(row.d + "T00:00:00Z");
+  since.setUTCDate(since.getUTCDate() - days);
+  const sinceStr = since.toISOString().slice(0, 10);
+  const rows = db
+    .prepare(
+      `SELECT file_name, date, duration_sec, summary_json
+       FROM activities
+       WHERE sport = 'cycling' AND date >= ?
+       ORDER BY date DESC`,
+    )
+    .all(sinceStr);
+  const out = [];
+  for (const r of rows) {
+    try {
+      out.push({
+        file_name: r.file_name,
+        date: r.date,
+        duration_sec: r.duration_sec,
+        summary: JSON.parse(r.summary_json),
+      });
+    } catch {
+      // 存档 JSON 损坏时跳过该条
+    }
+  }
+  return out;
+}
+
 /** TSB 中文简评（供 athlete_context / AI 参考） */
 function formNote(tsb) {
   if (tsb >= 15) return "状态很新鲜，适合比赛或高强度测试";

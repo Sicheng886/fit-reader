@@ -51,6 +51,22 @@ export const DATA_QUALITY = {
   record_gap_sec: 10, // 逐秒网格中连续缺失超过该时长，在 anomalies 中标注（损坏文件被跳过的记录会表现为这种缺口）
 };
 
+// ============ FTP 历史估算阈值（ftp.js：窗口内功率峰曲线 + 心率交叉验证） ============
+export const FTP_ESTIMATION = {
+  window_days: 42, // 回看窗口（天）：取最近 6 周内的骑行做联合估算
+  min_rides: 3, // 窗口内带功率数据的骑行次数下限，不足则判定数据不充分
+  min_coverage_pct: 80, // 单次骑行的功率/心率覆盖率下限（%），低于则不采信该次数据
+  max_effort_hr_pct: 0.9, // 全力判定：20min 峰功率所在骑行的心率峰值需 ≥ 该比例 × max_hr
+  zone_mismatch_pct: 15, // 功率 Z4+ 与心率 Z4+ 时长占比差（百分点）超过该值判定系统性偏移
+  drift_warn_pct: 5, // 心率漂移（有氧解耦）中位数超过该值提示数据漂移（疲劳/脱水/高温）
+  consistency_pct: 3, // CP 模型与 Coggan 20min×0.95 两法结果相差在该比例内判定"一致"
+  cp_short_sec: 300, // CP 模型短锚点：5 分钟峰功率
+  cp_long_sec: 1200, // CP 模型长锚点：20 分钟峰功率
+  coggan_factor: 0.95, // Coggan 口径：20 分钟峰功率 × 该系数 ≈ FTP
+  apply_min_w: 50, // 「采纳写回」时可接受的 FTP 下限（W）
+  apply_max_w: 500, // 「采纳写回」时可接受的 FTP 上限（W）
+};
+
 // ============ 踏频-功率联合分析阈值 ============
 export const CADENCE_ANALYSIS = {
   power_floor_pct: 0.75, // 只统计功率 ≥ 该比例 × FTP 的"发力时段"（Z3 起步）

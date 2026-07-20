@@ -542,6 +542,34 @@ svg.chart .axis-zero { stroke: var(--line); stroke-dasharray: 4 4; }
 .back-link:hover { color: var(--volt); }
 .detail-head .spacer { flex: 1; }
 
+/* FTP 科学估算面板 */
+.btn.sm { padding: 6px 14px; font-size: 12px; }
+.ftp-result { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.ftp-big {
+  font-family: var(--mono);
+  font-style: italic;
+  font-weight: 800;
+  font-size: 56px;
+  line-height: 1;
+  color: var(--volt);
+}
+.ftp-big small { font-size: 20px; color: var(--faint); font-style: normal; }
+.ftp-meta { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.conf-badge {
+  font-size: 12px;
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: 3px;
+  letter-spacing: 0.06em;
+}
+.conf-badge.high { background: rgba(61, 220, 151, 0.12); color: #3ddc97; border: 1px solid #3ddc97; }
+.conf-badge.medium { background: rgba(255, 176, 63, 0.12); color: var(--orange); border: 1px solid var(--orange); }
+.conf-badge.low { background: rgba(255, 93, 115, 0.12); color: #ff5d73; border: 1px solid #ff5d73; }
+.ftp-list { margin: 8px 0 0; padding-left: 18px; }
+.ftp-list li { margin-bottom: 4px; }
+.ftp-refs { font-size: 11px; margin-top: 4px; }
+.ftp-applied { color: #3ddc97; font-size: 13px; }
+
 @media (max-width: 860px) {
   .hero-grid { grid-template-columns: 1fr; }
   .act-row { grid-template-columns: 1fr; gap: 6px; }
