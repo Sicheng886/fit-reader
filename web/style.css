@@ -208,6 +208,34 @@ select:focus, input:focus { border-color: var(--volt); }
 }
 .settings-form input { width: 100%; box-sizing: border-box; }
 
+/* 指标说明 / 算法简介 */
+.glossary {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 14px;
+}
+.glossary > div {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.glossary dt {
+  color: var(--text);
+  font-weight: 600;
+  font-size: 14px;
+}
+.glossary dd {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.55;
+  margin: 0;
+}
+@media (min-width: 800px) {
+  .glossary { grid-template-columns: 1fr 1fr; }
+  /* 算法简介面板条目较长，允许单独单列（父容器加 .single-col） */
+  .single-col .glossary { grid-template-columns: 1fr; }
+}
+
 .muted { color: var(--muted); }
 .mono { font-family: var(--mono); }
 .empty {

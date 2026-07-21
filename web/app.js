@@ -309,6 +309,32 @@ async function renderDashboard() {
     </div>
     <div id="ftpPanel"></div>
     <div class="panel">
+      <div class="panel-title">指标说明</div>
+      <div class="glossary">
+        <div><dt>CTL · 体能</dt><dd>慢性训练负荷（Chronic Training Load）。TSS 的 42 天指数加权平均，反映长期训练积累；数值稳步上升代表体能增长，骤降通常意味着停训。</dd></div>
+        <div><dt>ATL · 疲劳</dt><dd>急性训练负荷（Acute Training Load）。TSS 的 7 天指数加权平均，反映近期疲劳程度；比赛周或高强度周后通常会冲高。</dd></div>
+        <div><dt>TSB · 状态</dt><dd>训练状态平衡（Training Stress Balance）= CTL − ATL。+5~+15 表示身体新鲜、适合比赛或高强度测试；−10 以下表示疲劳累积，需要恢复。</dd></div>
+        <div><dt>TSS · 训练负荷</dt><dd>Training Stress Score。综合训练强度与时长：TSS = (秒 × NP × IF) / (FTP × 3600) × 100。1 小时平路 FTP 强度 ≈ 100 TSS。</dd></div>
+        <div><dt>FTP · 功能阈值功率</dt><dd>Functional Threshold Power，理论上可稳定维持约 1 小时的平均功率。它是 Coggan 功率分区、IF、TSS 等几乎所有功率指标的锚点。</dd></div>
+        <div><dt>NP · 标准化功率</dt><dd>Normalized Power。先对功率做 30 秒滚动平均，再取四次方均值并开四次方根，补偿间歇、爬坡等功率波动带来的额外生理代价。</dd></div>
+        <div><dt>IF · 强度因子</dt><dd>Intensity Factor = NP / FTP。IF = 1.0 代表本次训练平均强度约等于 FTP。</dd></div>
+        <div><dt>VI · 变异指数</dt><dd>Variability Index = NP / 平均功率。越接近 1，功率输出越平稳；>1.05 通常说明训练起伏较大（如爬坡/间歇）。</dd></div>
+        <div><dt>心率漂移（有氧解耦）</dt><dd>前后半程效率因子（功率/心率，无功率时用速度/心率）的相对变化。&lt;5% 是有氧基础扎实的标志；高温、疲劳、脱水时通常会升高。</dd></div>
+        <div><dt>功率 / 心率分区</dt><dd>功率按 Coggan 7 区（%FTP）、心率按 5 区（%HRmax）划分。训练强度分布（低 Z1-Z2 / 中 Z3-Z4 / 高 Z5+）是判断周期取向（极化/金字塔/甜区）的核心。</dd></div>
+        <div><dt>峰功率曲线</dt><dd>5 秒 / 1 分钟 / 5 分钟 / 20 分钟的最大平均功率，分别对应无氧爆发、无氧耐力、有氧能力、阈值能力。本页「科学估算 FTP」基于最近窗口期的 5min/20min 峰功率。</dd></div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-title">核心算法简介</div>
+      <div class="glossary">
+        <div><dt>指数加权负荷模型</dt><dd>与 TrainingPeaks 一致：当日 CTL = 前日 CTL + (TSS − 前日 CTL) / 42，ATL = 前日 ATL + (TSS − 前日 ATL) / 7，缺天按 TSS = 0 参与衰减。</dd></div>
+        <div><dt>FTP 科学估算</dt><dd>双方法互校：① Morton 双参数临界功率模型 CP+W′/t，解出 CP 近似 FTP；② Coggan 20 分钟峰功率 × 0.95。再用 90% HRmax 全力判定、功率/心率区间偏移、心率漂移中位数做交叉验证；数据不足时返回需要补充收集的数据清单。</dd></div>
+        <div><dt>间歇识别</dt><dd>找出功率 ≥ 105% FTP 的连续段，低于阈值但 ≤ 10 秒的瞬时掉功率会被合并，短于 30 秒的段丢弃；识别到 ≥ 2 个重复工作段时输出间歇组统计。</dd></div>
+        <div><dt>爬坡段提取</dt><dd>30 秒滑动窗口计算局部坡度，平均坡度 ≥ 3%、段内累计爬升 ≥ 15 m、段长 ≥ 300 m 的连续路段被提取为爬坡段。</dd></div>
+        <div><dt>AI 分析</dt><dd>服务端把训练数据、负荷走势与指标口径拼装成 Markdown 提示词，调用 OpenAI 兼容接口（默认 Kimi）生成报告；未配置 API Key 时返回完整提示词，可一键复制到任意 AI 使用。</dd></div>
+      </div>
+    </div>
+    <div class="panel">
       <div class="panel-title">负荷趋势（灰柱 = 每日 TSS）</div>
       <div class="chart-legend">
         <span class="legend-chip"><span class="dot" style="background:#5aa2ff"></span>CTL 体能</span>
@@ -324,7 +350,7 @@ async function renderDashboard() {
     <div class="panel">
       <div class="panel-title">最近训练</div>
       <div class="act-list">${(ov.activities || []).slice(0, 6).map(actRowHtml).join("") || `<div class="empty">暂无训练记录</div>`}</div>
-    </div>`;
+    </div>`,
   drawTrendChart($("#trendChart"), daily);
   $("#ftpEstBtn")?.addEventListener("click", runFtpEstimate);
 }
