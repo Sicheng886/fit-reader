@@ -57,6 +57,8 @@ const fmtXAxis = (sec) => {
 };
 const num = (v, d = 0) =>
   v == null ? "-" : Number(v).toFixed(d).replace(/\.0+$/, d === 0 ? "" : "");
+const trunc = (s, n = 30) =>
+  s == null ? "" : s.length > n ? s.slice(0, n - 1) + "…" : s;
 
 // 分区配色（运动风渐变：灰→蓝→绿→荧光黄→橙→红）
 const ZONE_COLORS = {
@@ -827,7 +829,7 @@ async function renderAI() {
   app.innerHTML = `<div class="empty loading">加载中…</div>`;
   const ov = await loadOverview();
   const opts = (ov.activities || [])
-    .map((a) => `<option value="${esc(a.file_name)}">${esc(a.date)} · ${sportLabel(a.sport)} · ${esc(a.file_name)}</option>`)
+    .map((a) => `<option value="${esc(a.file_name)}">${esc(a.date)} · ${sportLabel(a.sport)} · ${esc(trunc(a.file_name))}</option>`)
     .join("");
   const aiInfo = ov.ai || {};
   const cfgNote = aiInfo.configured

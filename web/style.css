@@ -190,8 +190,12 @@ select, input[type="date"], input[type="file"], input[type="number"] {
   padding: 8px 12px;
   border-radius: 4px;
   outline: none;
+  max-width: 100%;
 }
 select:focus, input:focus { border-color: var(--volt); }
+
+/* AI 卡片里的下拉与日期输入撑满 */
+.ai-card select, .ai-card input[type="date"] { width: 100%; }
 
 /* 设置页表单 */
 .settings-form {
@@ -692,11 +696,24 @@ svg.chart .axis-zero { stroke: var(--line); stroke-dasharray: 4 4; }
 .ftp-applied { color: #3ddc97; font-size: 13px; }
 
 @media (max-width: 860px) {
-  /* 顶栏：tab 可横向滚动 */
-  .topbar { gap: 12px; padding: 0 14px; height: 52px; }
-  .tabs { flex: 1; overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch; gap: 2px; }
-  .tabs::-webkit-scrollbar { display: none; }
-  .tab { padding: 0 12px; font-size: 12px; letter-spacing: 0.06em; flex-shrink: 0; }
+  /* 顶栏：手机端改为两行（logo / nav） */
+  .topbar {
+    flex-direction: column;
+    align-items: stretch;
+    height: auto;
+    padding: 10px 14px;
+    gap: 8px;
+  }
+  .brand { align-self: flex-start; }
+  .tabs { flex: 1; width: 100%; height: auto; overflow-x: visible; gap: 2px; }
+  .tab {
+    flex: 1;
+    padding: 8px 2px;
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    text-align: center;
+    white-space: nowrap;
+  }
   .athlete-chip { display: none; }
   main { padding: 18px 14px 60px; }
 
