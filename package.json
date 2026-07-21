@@ -5,7 +5,7 @@
   "type": "module",
   "main": "index.js",
   "scripts": {
-    "analysis": "node index.js input/ output/ && node index.js --trend",
+    "analysis": "node analysis.js",
     "test": "node --test \"test/*.test.mjs\"",
     "web": "node server.js"
   },
