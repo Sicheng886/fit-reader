@@ -19,6 +19,23 @@ async function api(path, opts) {
   return data;
 }
 
+/** 通用弹窗：标题 + HTML 内容，点击遮罩或 × 关闭 */
+function showModal(title, bodyHtml) {
+  const el = document.createElement("div");
+  el.className = "modal-overlay";
+  el.innerHTML = `
+    <div class="modal">
+      <div class="modal-head">
+        <div class="modal-title">${esc(title)}</div>
+        <button class="modal-close" aria-label="关闭">×</button>
+      </div>
+      <div class="modal-body">${bodyHtml}</div>
+    </div>`;
+  document.body.appendChild(el);
+  el.querySelector(".modal-close").addEventListener("click", () => el.remove());
+  el.addEventListener("click", (e) => { if (e.target === el) el.remove(); });
+}
+
 const SPORT_LABEL = { cycling: "骑行", running: "跑步", swimming: "游泳" };
 const sportLabel = (s) => SPORT_LABEL[s] || s || "未知";
 const sportBadge = (s) =>
@@ -278,36 +295,10 @@ function renderMarkdownFallback(md) {
   return `<p>${esc(md).replace(/\n{2,}/g, "</p><p>").replace(/\n/g, "<br>")}</p>`;
 }
 
-// ---------------- 视图：概览 ----------------
+// ---------------- 指标说明弹窗内容 ----------------
 
-async function renderDashboard() {
-  app.innerHTML = `<div class="empty loading">加载中…</div>`;
-  const ov = await loadOverview();
-  const daily = ov.form_daily || [];
-  const last = daily[daily.length - 1];
-
-  const heroTile = (label, v, color, note) => `
-    <div class="hero-tile" style="--tile-color:${color}">
-      <div class="label">${label}</div>
-      <div class="value">${v ?? "-"}</div>
-      <div class="note">${note ?? ""}</div>
-    </div>`;
-
-  const a = ov.athlete || {};
-  app.innerHTML = `
-    <div class="view-title"><h1>负荷仪表盘</h1><span class="sub">CTL 体能 · ATL 疲劳 · TSB 状态（最近 90 天）</span></div>
-    <div class="hero-grid">
-      ${last ? heroTile("CTL · 体能", last.ctl, "#5aa2ff", "42 天指数加权，长期训练积累") : ""}
-      ${last ? heroTile("ATL · 疲劳", last.atl, "#ff5d73", "7 天指数加权，近期疲劳程度") : ""}
-      ${last ? heroTile("TSB · 状态", (last.tsb > 0 ? "+" : "") + last.tsb, "#3ddc97", formNote(last.tsb)) : ""}
-      <div class="hero-tile" style="--tile-color:#d7ff3f">
-        <div class="label">FTP · 阈值</div>
-        <div class="value" id="ftpTileValue">${a.ftp_watts ?? "-"}<small> W</small></div>
-        <div class="note"><button class="btn ghost sm" id="ftpEstBtn"><span>科学估算 FTP</span></button></div>
-      </div>
-      ${!last ? `<div class="empty" style="grid-column:1/-1">训练库为空 — 到「上传」页导入第一个 FIT 文件</div>` : ""}
-    </div>
-    <div id="ftpPanel"></div>
+function glossaryHtml() {
+  return `
     <div class="panel">
       <div class="panel-title">指标说明</div>
       <div class="glossary">
@@ -333,7 +324,43 @@ async function renderDashboard() {
         <div><dt>爬坡段提取</dt><dd>30 秒滑动窗口计算局部坡度，平均坡度 ≥ 3%、段内累计爬升 ≥ 15 m、段长 ≥ 300 m 的连续路段被提取为爬坡段。</dd></div>
         <div><dt>AI 分析</dt><dd>服务端把训练数据、负荷走势与指标口径拼装成 Markdown 提示词，调用 OpenAI 兼容接口（默认 Kimi）生成报告；未配置 API Key 时返回完整提示词，可一键复制到任意 AI 使用。</dd></div>
       </div>
+    </div>`;
+}
+
+// ---------------- 视图：概览 ----------------
+
+async function renderDashboard() {
+  app.innerHTML = `<div class="empty loading">加载中…</div>`;
+  const ov = await loadOverview();
+  const daily = ov.form_daily || [];
+  const last = daily[daily.length - 1];
+
+  const heroTile = (label, v, color, note) => `
+    <div class="hero-tile" style="--tile-color:${color}">
+      <div class="label">${label}</div>
+      <div class="value">${v ?? "-"}</div>
+      <div class="note">${note ?? ""}</div>
+    </div>`;
+
+  const a = ov.athlete || {};
+  app.innerHTML = `
+    <div class="view-title">
+      <h1>负荷仪表盘</h1>
+      <button class="btn icon" id="glossaryBtn" title="指标说明与算法口径">?</button>
+      <span class="sub">CTL 体能 · ATL 疲劳 · TSB 状态（最近 90 天）</span>
     </div>
+    <div class="hero-grid">
+      ${last ? heroTile("CTL · 体能", last.ctl, "#5aa2ff", "42 天指数加权，长期训练积累") : ""}
+      ${last ? heroTile("ATL · 疲劳", last.atl, "#ff5d73", "7 天指数加权，近期疲劳程度") : ""}
+      ${last ? heroTile("TSB · 状态", (last.tsb > 0 ? "+" : "") + last.tsb, "#3ddc97", formNote(last.tsb)) : ""}
+      <div class="hero-tile" style="--tile-color:#d7ff3f">
+        <div class="label">FTP · 阈值</div>
+        <div class="value" id="ftpTileValue">${a.ftp_watts ?? "-"}<small> W</small></div>
+        <div class="note"><button class="btn ghost sm" id="ftpEstBtn"><span>科学估算 FTP</span></button></div>
+      </div>
+      ${!last ? `<div class="empty" style="grid-column:1/-1">训练库为空 — 到「上传」页导入第一个 FIT 文件</div>` : ""}
+    </div>
+    <div id="ftpPanel"></div>
     <div class="panel">
       <div class="panel-title">负荷趋势（灰柱 = 每日 TSS）</div>
       <div class="chart-legend">
@@ -353,6 +380,7 @@ async function renderDashboard() {
     </div>`,
   drawTrendChart($("#trendChart"), daily);
   $("#ftpEstBtn")?.addEventListener("click", runFtpEstimate);
+  $("#glossaryBtn")?.addEventListener("click", () => showModal("指标说明与算法口径", glossaryHtml()));
 }
 
 // ---------------- FTP 科学估算（功率峰曲线 + 心率交叉验证） ----------------
