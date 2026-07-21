@@ -259,7 +259,7 @@ async function loadReportList(container, mode = "all") {
     container.innerHTML = `<div class="empty">暂无 ${mode === "all" ? "" : MODE_LABEL[mode]} 缓存报告</div>`;
     return;
   }
-  container.innerHTML = `<table class="data-table">
+  container.innerHTML = `<div class="table-wrap"><table class="data-table">
     <tr><th>时间</th><th>类别</th><th>关联训练</th><th>操作</th></tr>
     ${rows.map((r) => {
       const extra = r.race_date ? `比赛 ${r.race_date}` : r.compare_with ? `对比 ${esc(r.compare_with)}` : "";
@@ -270,7 +270,7 @@ async function loadReportList(container, mode = "all") {
         <td><button class="btn ghost" data-id="${r.id}"><span>加载</span></button></td>
       </tr>`;
     }).join("")}
-  </table>`;
+  </table></div>`;
   container.querySelectorAll("button[data-id]").forEach((btn) =>
     btn.addEventListener("click", () => renderCachedReport(Number(btn.dataset.id))),
   );
@@ -463,10 +463,10 @@ function ftpEstimateHtml(r) {
       ${applyHtml}
       <span class="ftp-applied muted" style="display:none">已保存到训练库并即时生效</span>
     </div>
-    <table class="data-table" style="margin-top:16px">
+    <div class="table-wrap"><table class="data-table" style="margin-top:16px">
       <tr><th>方法</th><th>结果</th><th>依据</th></tr>
       ${methodRows}
-    </table>
+    </table></div>
     ${needsHtml}${notesHtml}${refsHtml}
   </div>`;
 }
@@ -497,7 +497,7 @@ async function applyFtp(ftpW) {
 function monthlyTableHtml(months) {
   if (!months?.length) return `<div class="empty">暂无月度数据</div>`;
   const typeLabel = { polarized: "极化", pyramidal: "金字塔", sweet_spot: "甜区" };
-  return `<table class="data-table">
+  return `<div class="table-wrap"><table class="data-table">
     <tr><th>月份</th><th>TSS</th><th>时长 h</th><th>距离 km</th><th>次数</th><th>强度分布（低/中/高）</th><th>类型</th></tr>
     ${months.map((m) => {
       const p = m.intensity_pct;
@@ -511,18 +511,20 @@ function monthlyTableHtml(months) {
       return `<tr><td>${m.month}</td><td>${m.tss}</td><td>${m.hours}</td><td>${m.distance_km}</td><td>${m.sessions}</td>
         <td>${stack}${p ? `<span class="muted" style="font-size:11px">${p.low}/${p.mid}/${p.high}%</span>` : ""}</td>
         <td>${typeLabel[m.intensity_type] ?? "-"}</td></tr>`;
-    }).join("")}</table>`;
+    }).join("")}</table></div>`;
 }
 
 function actRowHtml(a) {
   return `<a class="act-row" href="#/activity/${encodeURIComponent(a.file_name)}">
     <span class="act-date">${esc(a.date)}</span>
     <span class="act-name">${sportBadge(a.sport)}${esc(a.file_name)}</span>
-    <span class="act-stat"><span class="v">${fmtDur(a.duration_sec)}</span><br><span class="k">时长</span></span>
-    <span class="act-stat"><span class="v">${num(a.distance_km, 1)}</span><br><span class="k">km</span></span>
-    <span class="act-stat"><span class="v">${a.np ?? "-"}</span><br><span class="k">NP</span></span>
-    <span class="act-stat"><span class="v">${num(a.intensity_factor, 2)}</span><br><span class="k">IF</span></span>
-    <span class="act-stat"><span class="v" style="color:var(--volt)">${a.tss ?? "-"}</span><br><span class="k">TSS</span></span>
+    <span class="act-stats">
+      <span class="act-stat"><span class="v">${fmtDur(a.duration_sec)}</span><br><span class="k">时长</span></span>
+      <span class="act-stat"><span class="v">${num(a.distance_km, 1)}</span><br><span class="k">km</span></span>
+      <span class="act-stat"><span class="v">${a.np ?? "-"}</span><br><span class="k">NP</span></span>
+      <span class="act-stat"><span class="v">${num(a.intensity_factor, 2)}</span><br><span class="k">IF</span></span>
+      <span class="act-stat"><span class="v" style="color:var(--volt)">${a.tss ?? "-"}</span><br><span class="k">TSS</span></span>
+    </span>
   </a>`;
 }
 
@@ -730,12 +732,12 @@ function segmentsHtml(summary) {
 function climbsHtml(summary) {
   if (!summary.climbs?.length) return "";
   return `<div class="panel"><div class="panel-title">爬坡段（${summary.climbs.length}）</div>
-    <table class="data-table">
+    <div class="table-wrap"><table class="data-table">
     <tr><th>名称</th><th>时长</th><th>长度 m</th><th>爬升 m</th><th>均坡度 %</th><th>均功率</th><th>均心率</th></tr>
     ${summary.climbs.map((c) => `<tr><td>${esc(c.name)}</td><td>${fmtDur(c.duration_sec)}</td>
       <td>${c.distance_m}</td><td>${c.elevation_gain_m}</td><td>${c.avg_grade_pct}</td>
       <td>${c.avg_power ?? "-"}</td><td>${c.avg_hr ?? "-"}</td></tr>`).join("")}
-    </table></div>`;
+    </table></div></div>`;
 }
 
 function cadencePowerHtml(summary) {

@@ -137,6 +137,7 @@ main {
   padding: 20px;
   margin-bottom: 20px;
 }
+.table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 .panel-title {
   font-size: 11px;
   font-weight: 700;
@@ -418,6 +419,7 @@ select:focus, input:focus { border-color: var(--volt); }
   transition: border-color 0.15s, background 0.15s;
 }
 .act-row:hover { border-color: var(--volt); background: var(--panel-2); }
+.act-row .act-stats { display: contents; }
 .act-date { font-family: var(--mono); font-size: 13px; color: var(--muted); }
 .act-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .act-stat { text-align: right; min-width: 64px; }
@@ -690,9 +692,63 @@ svg.chart .axis-zero { stroke: var(--line); stroke-dasharray: 4 4; }
 .ftp-applied { color: #3ddc97; font-size: 13px; }
 
 @media (max-width: 860px) {
-  .hero-grid { grid-template-columns: 1fr; }
-  .act-row { grid-template-columns: 1fr; gap: 6px; }
-  .topbar { gap: 12px; padding: 0 14px; }
+  /* 顶栏：tab 可横向滚动 */
+  .topbar { gap: 12px; padding: 0 14px; height: 52px; }
+  .tabs { flex: 1; overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch; gap: 2px; }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tab { padding: 0 12px; font-size: 12px; letter-spacing: 0.06em; flex-shrink: 0; }
   .athlete-chip { display: none; }
   main { padding: 18px 14px 60px; }
+
+  /* 仪表盘大数字卡片 */
+  .hero-grid { grid-template-columns: 1fr; }
+  .hero-tile { padding: 16px 18px 14px; }
+  .hero-tile .value { font-size: 36px; }
+
+  /* 训练列表卡片改为竖屏形态 */
+  .act-row {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 14px;
+    align-items: stretch;
+  }
+  .act-row .act-stats { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 10px 6px; margin-top: 4px; }
+  .act-row .act-stat { flex: 1 1 0; min-width: 58px; text-align: left; }
+  .act-row .act-stat .v { font-size: 15px; }
+
+  /* 指标网格 */
+  .metric-grid { grid-template-columns: repeat(2, 1fr); }
+  .metric .m-value { font-size: 20px; }
+
+  /* 详情页分区图与头部 */
+  .zone-panels { grid-template-columns: 1fr !important; }
+  .detail-head { flex-direction: column; align-items: flex-start; gap: 10px; }
+  .detail-head .spacer { display: none; }
+  .detail-head .btn { align-self: stretch; }
+
+  /* FTP 估算面板 */
+  .ftp-big { font-size: 42px; }
+  .ftp-result { align-items: stretch; }
+
+  /* 弹窗 */
+  .modal { max-width: calc(100% - 24px); }
+  .modal-overlay { padding: 12px; }
+  .modal-body { padding: 16px; }
+
+  /* AI 卡片 */
+  .ai-controls { grid-template-columns: 1fr; }
+
+  /* 表格紧凑 */
+  .data-table { font-size: 12px; }
+  .data-table th, .data-table td { padding: 6px 8px; }
+
+  /* 峰功率曲线 */
+  .peak-curve { gap: 10px; height: 130px; }
+  .peak-col .p-val { font-size: 12px; }
+  .peak-col .p-label { font-size: 10px; }
+
+  /* 上传与标题 */
+  .dropzone { padding: 48px 24px; }
+  .view-title { flex-direction: column; align-items: flex-start; gap: 6px; }
 }
