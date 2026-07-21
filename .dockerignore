@@ -1,0 +1,26 @@
+# 构建产物/依赖
+node_modules
+*.log
+
+# 版本控制
+.git
+.gitignore
+
+# 环境变量与密钥（镜像中绝不携带 .env）
+.env
+.env.local
+.env.*
+
+# 运行时数据目录（通过卷挂载）
+input
+output
+db
+
+# 测试文件（部署镜像不需要）
+test
+
+# Docker 自身与文档
+docker-compose.yml
+Dockerfile
+.dockerignore
+*.md

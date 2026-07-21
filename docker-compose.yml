@@ -1,0 +1,23 @@
+services:
+  fit-reader:
+    build: .
+    image: fit-reader:latest
+    container_name: fit-reader
+    ports:
+      - "${PORT:-3000}:3000"
+    env_file:
+      - .env
+    environment:
+      # 确保容器内目录与镜像默认值一致
+      FIT_INPUT_DIR: /input
+      FIT_OUTPUT_DIR: /output
+      FIT_DB_PATH: /app/db/fitness.db
+    volumes:
+      # 必须挂载：输入 FIT 文件与输出结果
+      - ./input:/input
+      - ./output:/output
+      # 强烈建议挂载：训练库持久化，避免容器重建后数据丢失
+      - ./db:/app/db
+      # 可选：如需自定义骑手参数，把本机 settings.js 挂载到 /app/settings.js
+      # - ./settings.js:/app/settings.js
+    restart: unless-stopped

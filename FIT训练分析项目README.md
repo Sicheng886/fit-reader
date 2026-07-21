@@ -185,6 +185,23 @@ export const ATHLETE = {
 
 `npm test` 全部通过：指标算法单元测试 + 合成 FIT 端到端回归（30 分钟模拟骑行含 60 秒功率缺失、损坏文件缺失计数、跑步配速、游泳 length、开发者字段）+ Web 服务端到端（上传/概览/详情/时序/AI 提示词/路径安全），并定期用 `input/` 下真实码表文件做端到端验证。
 
+## Docker 部署
+
+项目已支持一键打包为 Docker 镜像并作为 Web 服务部署。`input/` 与 `output/` 通过卷挂载到宿主机，`.env` 环境变量在容器启动时注入，不会打包进镜像。
+
+快速开始：
+
+```bash
+cp .env.example .env
+# 编辑 .env，填入 FIT_AI_API_KEY
+docker build -t fit-reader:latest .
+docker compose up -d
+```
+
+然后打开 http://localhost:3000 即可使用。
+
+完整部署说明（含 API Key 获取教学、批量分析、持久化建议）见 [DEPLOY.md](./DEPLOY.md)。
+
 ## 文件清单
 
 | 文件                   | 说明                                                        |
