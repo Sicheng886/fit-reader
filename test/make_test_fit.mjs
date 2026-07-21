@@ -48,7 +48,7 @@ const u32 = (v) => {
 };
 
 // FIT 基础类型标识（定义消息第 3 字节）
-const BASE = { enum: 0x00, uint8: 0x02, string: 0x07, byte: 0x0d, uint16: 0x84, uint32: 0x86 };
+const BASE = { enum: 0x00, sint8: 0x01, uint8: 0x02, string: 0x07, byte: 0x0d, uint16: 0x84, uint32: 0x86 };
 
 /** 定义消息：fields = [{ num, size, base }]；devFields = [{ num, size, devIndex }]（可选） */
 function defMsg(local, globalNum, fields, devFields = null) {
@@ -113,7 +113,7 @@ function sportMsgs(sportEnum) {
 
 /**
  * record 消息序列。
- * records: [{ t (Date ms), power, heart_rate, cadence, altitude, speed (m/s), distance (m) }]
+ * records: [{ t (Date ms), power, heart_rate, cadence, altitude, speed (m/s), distance (m), temperature (℃) }]
  * null 字段写 FIT 无效值；devField = { num, value } 时每条记录附带 1 字节开发者字段。
  */
 function recordMsgs(records, devField = null) {
@@ -125,6 +125,7 @@ function recordMsgs(records, devField = null) {
     { num: 2, size: 2, base: BASE.uint16 }, // altitude (scale 5, offset -500)
     { num: 6, size: 2, base: BASE.uint16 }, // speed (scale 1000, m/s)
     { num: 5, size: 4, base: BASE.uint32 }, // distance (scale 100, m)
+    { num: 13, size: 1, base: BASE.sint8 }, // temperature (℃)
   ];
   const devs = devField ? [{ num: devField.num, size: 1, devIndex: 0 }] : null;
   const msgs = [defMsg(LOCAL.record, 20, fields, devs)];
@@ -137,6 +138,7 @@ function recordMsgs(records, devField = null) {
       r.altitude != null ? u16((r.altitude + 500) * 5) : u16(0xffff),
       r.speed != null ? u16(r.speed * 1000) : u16(0xffff),
       r.distance != null ? u32(r.distance * 100) : u32(0xffffffff),
+      r.temperature != null ? u8(r.temperature & 0xff) : u8(0x7f),
     ];
     if (devField) parts.push(u8(devField.value));
     msgs.push(dataMsg(LOCAL.record, Buffer.concat(parts)));
@@ -167,7 +169,7 @@ function lapMsg({ startMs, elapsedSec, distanceM, avgPower, avgHr, avgSpeedMS })
   return [def, dat];
 }
 
-function sessionMsg({ startMs, sport, elapsedSec, distanceM, avgHr, poolLengthM }) {
+function sessionMsg({ startMs, sport, elapsedSec, distanceM, avgHr, poolLengthM, totalCalories, avgSpeedMS }) {
   const def = defMsg(LOCAL.session, 18, [
     { num: 253, size: 4, base: BASE.uint32 }, // timestamp
     { num: 5, size: 1, base: BASE.enum }, // sport
@@ -175,6 +177,8 @@ function sessionMsg({ startMs, sport, elapsedSec, distanceM, avgHr, poolLengthM 
     { num: 9, size: 4, base: BASE.uint32 }, // total_distance (scale 100)
     { num: 16, size: 1, base: BASE.uint8 }, // avg_heart_rate
     { num: 44, size: 2, base: BASE.uint16 }, // pool_length (scale 100, m)
+    { num: 11, size: 2, base: BASE.uint16 }, // total_calories (kcal)
+    { num: 14, size: 2, base: BASE.uint16 }, // avg_speed (scale 1000, m/s)
   ]);
   const dat = dataMsg(
     LOCAL.session,
@@ -185,6 +189,8 @@ function sessionMsg({ startMs, sport, elapsedSec, distanceM, avgHr, poolLengthM 
       distanceM != null ? u32(distanceM * 100) : u32(0xffffffff),
       avgHr != null ? u8(avgHr) : u8(0xff),
       poolLengthM != null ? u16(poolLengthM * 100) : u16(0xffff),
+      totalCalories != null ? u16(totalCalories) : u16(0xffff),
+      avgSpeedMS != null ? u16(avgSpeedMS * 1000) : u16(0xffff),
     ]),
   );
   return [def, dat];
@@ -256,9 +262,10 @@ function buildRecords({
   durationSec,
   power = null,
   heartRate = null, // 数值或 (sec) => bpm
-  cadence = null,
+  cadence = null, // 数值或 (sec) => rpm
   altitude = null,
   speedMS = null,
+  temperature = null,
   powerGap = null, // [起始秒偏移, 时长]，区间内 power 置 null（设备掉秒）
   dropSpans = [],
   badTimestampOffsets = [],
@@ -277,10 +284,16 @@ function buildRecords({
             ? heartRate(i)
             : heartRate
           : null,
-      cadence,
+      cadence:
+        cadence != null
+          ? typeof cadence === "function"
+            ? cadence(i)
+            : cadence
+          : null,
       altitude,
       speed: speedMS,
       distance: speedMS != null ? Math.round(i * speedMS) : null,
+      temperature,
     });
   }
   return records;
@@ -298,9 +311,10 @@ export function buildRideFit(opts = {}) {
     durationSec,
     power,
     heartRate: opts.heartRate ?? 140,
-    cadence: 90,
+    cadence: opts.cadence ?? 90,
     altitude: 100,
     speedMS,
+    temperature: opts.temperature ?? 25,
     powerGap: opts.powerGap,
     dropSpans: opts.dropSpans,
     badTimestampOffsets: opts.badTimestampOffsets,
@@ -324,6 +338,8 @@ export function buildRideFit(opts = {}) {
       elapsedSec: durationSec,
       distanceM: durationSec * speedMS,
       avgHr: 140,
+      totalCalories: opts.totalCalories ?? 360,
+      avgSpeedMS: speedMS,
     }),
   ];
   return encodeFit(msgs);

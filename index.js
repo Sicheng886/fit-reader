@@ -534,6 +534,7 @@ export async function analyzeFile(input, outDir) {
       altitude: r?.altitude != null ? Math.round(r.altitude * 10000) / 10 : null,
       speed: r?.speed != null ? Math.round(r.speed * 100) / 100 : null,
       distance: r?.distance != null ? Math.round(r.distance * 1000) : null, // 米
+      temperature: r?.temperature ?? null, // ℃
     });
   }
 
@@ -541,7 +542,7 @@ export async function analyzeFile(input, outDir) {
   const base = path.basename(input, path.extname(input));
   const csvPath = path.join(outDir, `${base}.records.csv`);
   const header =
-    "timestamp,power,heart_rate,cadence,altitude,speed,distance_m\n";
+    "timestamp,power,heart_rate,cadence,altitude,speed,distance_m,temperature\n";
   const lines = records.map((r) =>
     [
       r.timestamp,
@@ -551,6 +552,7 @@ export async function analyzeFile(input, outDir) {
       r.altitude,
       r.speed,
       r.distance,
+      r.temperature,
     ]
       .map((v) => (v == null ? "" : v))
       .join(","),
@@ -600,6 +602,33 @@ export async function analyzeFile(input, outDir) {
     if (sd != null)
       distanceKm = Math.round((sd > 1000 ? sd / 1000 : sd) * 100) / 100;
   }
+
+  // 平均速度与卡路里：优先取 session 汇总（设备口径），缺失时用记录数据兜底
+  const sess = data.sessions?.[0] || {};
+  let avgSpeedKmh =
+    sess.avg_speed != null ? Math.round(sess.avg_speed * 100) / 100 : null;
+  if (avgSpeedKmh == null && distanceKm != null && durationSec > 0) {
+    avgSpeedKmh = Math.round((distanceKm / (durationSec / 3600)) * 100) / 100;
+  }
+  let totalCalories = sess.total_calories ?? null;
+  if (totalCalories == null) {
+    // record 里的 calories 是累计值，取最大（末值）兜底
+    const recCals = raw.map((r) => r.calories).filter((v) => v != null);
+    if (recCals.length) totalCalories = Math.max(...recCals);
+  }
+
+  // 温度统计（部分码表 record 带温度，无则整段省略）
+  const temps = records.map((r) => r.temperature).filter((v) => v != null);
+  const temperatureSection = temps.length
+    ? {
+        avg:
+          Math.round(
+            (temps.reduce((a, b) => a + b, 0) / temps.length) * 10,
+          ) / 10,
+        min: Math.min(...temps),
+        max: Math.max(...temps),
+      }
+    : undefined;
 
   // 记录层面的缺失统计：时间跨度内没有任何数据的秒数
   // （损坏文件被 force 模式跳过的记录会表现为这种缺口）
@@ -729,6 +758,8 @@ export async function analyzeFile(input, outDir) {
       duration_sec: durationSec,
       distance_km: distanceKm,
       elevation_gain_m: elevationGain(alts),
+      ...(avgSpeedKmh != null ? { avg_speed_kmh: avgSpeedKmh } : {}),
+      ...(totalCalories != null ? { total_calories: totalCalories } : {}),
     },
     athlete_context: { ...ATHLETE },
     power: {
@@ -756,7 +787,9 @@ export async function analyzeFile(input, outDir) {
       zone_distribution_pct: zoneDistribution(hrs, HR_ZONES, ATHLETE.max_hr),
       hr_drift_pct: hrDriftPct(records, driftField),
     },
-    cadence: { avg: avg(cads) },
+    // 踏频均值剔除 0 rpm（滑行）秒，只统计踩踏时段，与码表 session / Strava 口径一致
+    cadence: { avg: avg(cads.map((c) => (c > 0 ? c : null))) },
+    temperature: temperatureSection,
     pace: paceSection,
     swim: swimSection,
     developer_fields: collectDeveloperFields(raw),

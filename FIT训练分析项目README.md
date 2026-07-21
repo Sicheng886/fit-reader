@@ -107,14 +107,16 @@ export const ATHLETE = {
 | altitude   | 海拔（m）                        |
 | speed      | 速度（km/h）                     |
 | distance_m | 累计距离（m）                    |
+| temperature | 温度（℃），设备无温度数据时留空 |
 
 ### `xxx.summary.json` — 汇总指标（喂 AI 用）
 
-- `activity`：日期、运动类型（cycling/running/swimming）、时长、距离、爬升
+- `activity`：日期、运动类型（cycling/running/swimming）、时长、距离、爬升、平均速度（km/h）、卡路里（kcal，后两项取自 session 汇总，缺失时用记录数据兜底）
 - `athlete_context`：骑手参数 + 当日 CTL/ATL/TSB 及状态简评
 - `power`：平均/标准化功率（NP）、最大功率、变异指数（VI）、强度因子（IF）、TSS、功体比、峰功率曲线（5s/1min/5min/20min）、FTP 自动估算（20min 峰功率 × 0.95 及更新建议）、Coggan 7 区时间分布
 - `heart_rate`：平均/最大心率、5 区时间分布、心率漂移（有氧解耦 %）
-- `cadence`：平均踏频（跑步为步频 spm）
+- `cadence`：平均踏频（剔除 0 rpm 滑行秒、只统计踩踏时段，与码表/Strava 口径一致；跑步为步频 spm）
+- `temperature`：温度统计（avg/min/max，℃），设备无温度数据时省略
 - `pace`（仅跑步）：平均配速、最快 1 分钟配速（min/km）；lap 级赛段附带平均配速
 - `swim`（仅游泳）：趟数、泳池长度、平均每趟用时、总划水数、平均 SWOLF（秒+划水次数）
 - `developer_fields`：开发者字段统计（第三方码表自定义数值字段的 样本数/均值/最值），无则省略
@@ -139,6 +141,7 @@ export const ATHLETE = {
 - FTP 自动估算：20 分钟峰功率 × 0.95（无连续 20 分钟窗口时省略）
 - 间歇识别：功率 ≥ 105% FTP 的过阈段，短瞬时掉功率合并、< 30s 丢弃
 - 爬坡段提取：30s 窗口局部坡度 ≥ 3%，且段内爬升 ≥ 15m、长度 ≥ 300m
+- 踏频均值口径：剔除 0 rpm（滑行）秒，只统计踩踏时段（与码表 session / Strava 一致）
 - 踏频-功率联合分析：仅统计功率 ≥ 75% FTP 的发力时段，低踏频 < 80rpm / 高踏频 > 90rpm
 - CTL = TSS 的 42 天指数加权（慢性负荷/体能）；ATL = TSS 的 7 天指数加权（急性负荷/疲劳）；TSB = CTL − ATL（状态）；缺天按 TSS=0 参与衰减
 - 月度强度分布：低(Z1–Z2)/中(Z3–Z4)/高(Z5–Z7) 时间占比按时长加权；分类规则：低≥75% 且 高>中 → polarized，低>中>高 → pyramidal，其余 → sweet_spot

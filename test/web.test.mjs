@@ -92,6 +92,7 @@ test("时序接口返回抽稀后的记录", async () => {
   assert.equal(data.stride, 2);
   const p0 = data.points[0];
   assert.equal(p0.power, 200);
+  assert.equal(p0.temperature, 25);
   assert.equal(typeof p0.t, "string");
 });
 

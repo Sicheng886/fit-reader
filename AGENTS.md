@@ -4,7 +4,7 @@
 
 **fit-reader** 是一个无构建步骤的 Node.js 命令行项目（主脚本 `index.js` + 配置 `settings.js`），用于解析码表/运动手表导出的 `.fit` 文件（当前以骑行数据为主），输出两类结果：
 
-1. `xxx.records.csv` — 重采样到严格 1 秒网格的逐秒时序明细（timestamp, power, heart_rate, cadence, altitude, speed, distance_m），供存档与程序化计算；
+1. `xxx.records.csv` — 重采样到严格 1 秒网格的逐秒时序明细（timestamp, power, heart_rate, cadence, altitude, speed, distance_m, temperature），供存档与程序化计算；
 2. `xxx.summary.json` — 汇总训练指标（NP、IF、TSS、功率/心率分区分布、峰功率曲线、心率漂移、圈/赛段、数据质量与异常标注），设计上用于直接喂给 AI 做训练解读。
 
 这不是一个库，也没有构建步骤——直接运行脚本即可。

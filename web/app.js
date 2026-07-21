@@ -566,7 +566,9 @@ async function renderActivityDetail(name) {
   const metrics = [];
   metrics.push(metricHtml("时长", fmtDur(a.duration_sec)));
   metrics.push(metricHtml("距离", num(a.distance_km, 2), "km"));
+  if (a.avg_speed_kmh != null) metrics.push(metricHtml("平均速度", num(a.avg_speed_kmh, 2), "km/h"));
   if (a.elevation_gain_m) metrics.push(metricHtml("爬升", a.elevation_gain_m, "m"));
+  if (a.total_calories != null) metrics.push(metricHtml("卡路里", a.total_calories, "kcal"));
   if (p.normalized_power != null) metrics.push(metricHtml("NP", p.normalized_power, "W", `IF ${num(p.intensity_factor, 2)}`));
   if (p.avg != null) metrics.push(metricHtml("平均功率", num(p.avg, 0), "W", p.w_per_kg_avg ? `${num(p.w_per_kg_avg, 2)} W/kg` : ""));
   if (p.max != null) metrics.push(metricHtml("最大功率", p.max, "W"));
@@ -576,6 +578,8 @@ async function renderActivityDetail(name) {
     metrics.push(metricHtml("心率漂移", num(hr.hr_drift_pct, 1), "%", Math.abs(hr.hr_drift_pct) < 5 ? "有氧基础扎实" : "漂移偏大"));
   if (summary.cadence?.avg != null)
     metrics.push(metricHtml(a.sport === "running" ? "平均步频" : "平均踏频", num(summary.cadence.avg, 0), a.sport === "running" ? "spm" : "rpm"));
+  if (summary.temperature)
+    metrics.push(metricHtml("平均温度", num(summary.temperature.avg, 1), "°C", summary.temperature.max != null ? `最高 ${summary.temperature.max}°C` : ""));
   if (summary.pace) {
     metrics.push(metricHtml("平均配速", fmtPace(summary.pace.avg_pace_min_per_km), "/km"));
     if (summary.pace.best_1min_pace_min_per_km)
@@ -608,6 +612,7 @@ async function renderActivityDetail(name) {
     { key: "cadence", name: a.sport === "running" ? "步频" : "踏频", color: "#3fd6f5", unit: a.sport === "running" ? "spm" : "rpm" },
     { key: "altitude", name: "海拔", color: "#8d9aa8", unit: "m" },
     { key: "speed", name: "速度", color: "#5aa2ff", unit: "km/h" },
+    { key: "temperature", name: "温度", color: "#ffa94d", unit: "°C" },
   ];
 
   app.innerHTML = `

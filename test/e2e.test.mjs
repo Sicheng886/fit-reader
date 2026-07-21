@@ -43,7 +43,7 @@ test("骑行：30 分钟恒定功率 + 60 秒功率缺失", async () => {
   assert.equal(lines.length, 1801);
   assert.equal(
     lines[0],
-    "timestamp,power,heart_rate,cadence,altitude,speed,distance_m",
+    "timestamp,power,heart_rate,cadence,altitude,speed,distance_m,temperature",
   );
   assert.equal(lines[601].split(",")[1], ""); // 第 600 秒功率缺失留空
 
@@ -66,9 +66,26 @@ test("骑行：30 分钟恒定功率 + 60 秒功率缺失", async () => {
   assert.equal(summary.data_quality.record_count, 1800);
   assert.equal(summary.data_quality.missing_seconds, undefined);
 
+  // session 汇总的平均速度（10 m/s = 36 km/h）与卡路里；record 温度统计
+  assert.equal(summary.activity.avg_speed_kmh, 36);
+  assert.equal(summary.activity.total_calories, 360);
+  assert.equal(summary.temperature.avg, 25);
+  assert.equal(summary.temperature.min, 25);
+  assert.equal(summary.temperature.max, 25);
+
   // 训练库注入当日 CTL/ATL/TSB（测试库内首次训练，均为小值）
   assert.equal(typeof summary.athlete_context.ctl, "number");
   assert.equal(typeof summary.athlete_context.tsb, "number");
+});
+
+test("踏频：剔除滑行 0 rpm 秒（与码表/Strava 口径一致）", async () => {
+  // 前半程 90 rpm 踩踏，后半程 0 rpm 滑行 → 平均踏频应为 90 而非 45
+  const fit = writeFit(
+    "coast.fit",
+    gen.buildRideFit({ cadence: (i) => (i < 900 ? 90 : 0) }),
+  );
+  const { summary } = await analyzeFile(fit, outDir);
+  assert.equal(summary.cadence.avg, 90);
 });
 
 test("损坏兜底：整段记录缺失 + 无时间戳坏记录被计数标注", async () => {

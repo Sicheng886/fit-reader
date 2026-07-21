@@ -108,7 +108,7 @@ function loadRecords(fileName, maxPoints = 1400) {
   const lines = fs.readFileSync(csvPath, "utf8").trim().split("\n");
   const rows = lines.slice(1); // 跳过表头
   const stride = Math.max(1, Math.ceil(rows.length / maxPoints));
-  const num = (s) => (s === "" ? null : Number(s));
+  const num = (s) => (s === "" || s == null ? null : Number(s));
   const out = [];
   for (let i = 0; i < rows.length; i += stride) {
     const c = rows[i].split(",");
@@ -120,6 +120,8 @@ function loadRecords(fileName, maxPoints = 1400) {
       altitude: num(c[4]),
       speed: num(c[5]),
       distance_m: num(c[6]),
+      // 旧版 CSV 没有温度列，c[7] 为 undefined 时归一为 null（避免 NaN 进图表）
+      temperature: num(c[7]),
     });
   }
   return { points: out, total_seconds: rows.length, stride };
