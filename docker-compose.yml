@@ -19,5 +19,5 @@ services:
       # 强烈建议挂载：训练库持久化，避免容器重建后数据丢失
       - ./db:/app/db
       # 可选：如需自定义骑手参数，把本机 settings.js 挂载到 /app/settings.js
-      # - ./settings.js:/app/settings.js
+      - ./settings.js:/app/settings.js
     restart: unless-stopped
