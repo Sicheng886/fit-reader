@@ -16,6 +16,7 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "fit-reader-test-"));
 process.env.FIT_DB_PATH = path.join(tmp, "test-fitness.db");
 
 const { analyzeFile } = await import("../index.js");
+const { ATHLETE } = await import("../settings.js");
 const gen = await import("./make_test_fit.mjs");
 
 const inDir = path.join(tmp, "in");
@@ -50,9 +51,13 @@ test("骑行：30 分钟恒定功率 + 60 秒功率缺失", async () => {
   assert.equal(summary.activity.sport, "cycling");
   assert.equal(summary.activity.duration_sec, 1800);
   assert.equal(summary.power.normalized_power, 200);
-  // IF = 200/118 = 1.69；TSS = 1800×200×1.69/(118×3600)×100 = 143
-  assert.equal(summary.power.intensity_factor, 1.69);
-  assert.equal(summary.power.tss, 143);
+  // IF = NP/FTP、TSS = 时长×NP×IF/(FTP×3600)×100（期望值按当前生效 FTP 动态计算，
+  // 骑手参数是可调数据而非代码常量，不能写死）
+  const ftp = ATHLETE.ftp_watts;
+  const expectedIF = Math.round((200 / ftp) * 100) / 100;
+  const expectedTSS = Math.round(((1800 * 200 * expectedIF) / (ftp * 3600)) * 100);
+  assert.equal(summary.power.intensity_factor, expectedIF);
+  assert.equal(summary.power.tss, expectedTSS);
   assert.equal(summary.power.peak_curve["5min"], 200);
 
   // 功率缺失被标注；覆盖率 = 1740/1800 ≈ 97%

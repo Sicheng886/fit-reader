@@ -17,15 +17,11 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "fit-web-test-"));
 process.env.FIT_DB_PATH = path.join(tmp, "test.db");
 process.env.FIT_OUTPUT_DIR = path.join(tmp, "output");
 process.env.FIT_INPUT_DIR = path.join(tmp, "input");
-// FTP 写回接口会改写 settings 文件：指向临时副本，隔离真实 settings.js
-const FAKE_SETTINGS = path.join(tmp, "settings.js");
-fs.copyFileSync(path.resolve("settings.js"), FAKE_SETTINGS);
-process.env.FIT_SETTINGS_PATH = FAKE_SETTINGS;
 delete process.env.FIT_AI_API_KEY; // 确保走"未配置→返回提示词"分支
 
 const { buildRideFit } = await import("./make_test_fit.mjs");
 const { createServer } = await import("../server.js");
-const { closeDb, saveAiReport, listAiReports, getAiReport, upsertActivity } = await import("../db.js");
+const { closeDb, saveAiReport, listAiReports, getAiReport, upsertActivity, getAthleteState } = await import("../db.js");
 
 let server, base;
 
@@ -186,7 +182,14 @@ test("FTP 估算接口：基于训练库骑行返回双方法估值", async () =
   assert.ok(Array.isArray(data.data_needs));
 });
 
-test("FTP 写回接口：改写 settings 副本并进程内即时生效", async () => {
+test("骑手参数接口：未配置时返回默认值 + configured=false", async () => {
+  const { status, data } = await getJson("/api/athlete");
+  assert.equal(status, 200);
+  assert.equal(data.configured, false); // 临时库无 athlete 行
+  assert.ok(data.athlete.ftp_watts > 0); // 回落到 settings.js 出厂默认值
+});
+
+test("FTP 写回接口：写入训练库并进程内即时生效", async () => {
   const resp = await fetch(base + "/api/ftp-apply", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -195,11 +198,50 @@ test("FTP 写回接口：改写 settings 副本并进程内即时生效", async 
   assert.equal(resp.status, 200);
   const data = await resp.json();
   assert.deepEqual(data, { applied: true, ftp_w: 131 });
-  // 改写的是临时副本而非真实 settings.js
-  assert.match(fs.readFileSync(FAKE_SETTINGS, "utf8"), /ftp_watts: 131/);
+  // 写入训练库 settings 表（configured 变为 true）
+  const st = getAthleteState();
+  assert.equal(st.configured, true);
+  assert.equal(st.athlete.ftp_watts, 131);
   // 进程内 ATHLETE 立即更新（概览接口可见）
   const ov = await getJson("/api/overview");
   assert.equal(ov.data.athlete.ftp_watts, 131);
+  assert.equal(ov.data.athlete_configured, true);
+});
+
+test("骑手参数接口：合法全量与部分更新", async () => {
+  const post = (body) =>
+    fetch(base + "/api/athlete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  // 全量更新
+  const r1 = await post({ ftp_watts: 140, max_hr: 190, weight_kg: 62.5 });
+  assert.equal(r1.status, 200);
+  const d1 = await r1.json();
+  assert.equal(d1.applied, true);
+  assert.deepEqual(d1.athlete, { ftp_watts: 140, max_hr: 190, weight_kg: 62.5 });
+  // 部分更新：只改体重，其余保留
+  const r2 = await post({ weight_kg: 61 });
+  assert.equal(r2.status, 200);
+  assert.deepEqual((await r2.json()).athlete, { ftp_watts: 140, max_hr: 190, weight_kg: 61 });
+  // GET 视角与库一致
+  const g = await getJson("/api/athlete");
+  assert.equal(g.data.configured, true);
+  assert.equal(g.data.athlete.weight_kg, 61);
+});
+
+test("骑手参数接口：非法值与空更新被拒绝", async () => {
+  const post = (body) =>
+    fetch(base + "/api/athlete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  assert.equal((await post({ ftp_watts: 10 })).status, 400);
+  assert.equal((await post({ max_hr: 999 })).status, 400);
+  assert.equal((await post({ weight_kg: -5 })).status, 400);
+  assert.equal((await post({})).status, 400);
 });
 
 test("FTP 写回接口：越界数值被拒绝", async () => {

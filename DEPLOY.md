@@ -154,13 +154,14 @@ docker run --rm \
 | `/app/db` | **强烈建议** | SQLite 训练库，挂载后容器重建不会丢失历史数据 |
 | `/app/settings.js` | 可选 | 自定义骑手参数（FTP、最大心率、分区阈值等） |
 
-### 自定义骑手参数
+### 自定义骑手参数与算法阈值
 
-把项目根目录的 `settings.js` 复制到宿主机，修改后挂载进容器：
+骑手参数（FTP / 最大心率 / 体重）**不需要挂载任何文件**：直接在 Web 界面「设置」页修改，保存在训练库（`/app/db`，已挂载持久化）中，分析新文件时自动生效。首次打开 Web 界面且未配置过时，会自动引导到设置页。
+
+如需调整算法阈值（分区、间歇/爬坡识别等）或骑手参数的出厂默认值，才把本机 `settings.js` 挂载进容器：
 
 ```bash
-cp settings.js my-settings.js
-# 编辑 my-settings.js 里的 ATHLETE 等参数
+# 编辑 settings.js 里的分区 / 阈值 / ATHLETE 出厂默认值
 docker run -d \
   --name fit-reader \
   -p 3000:3000 \
@@ -168,11 +169,13 @@ docker run -d \
   -v "$(pwd)/input:/input" \
   -v "$(pwd)/output:/output" \
   -v "$(pwd)/db:/app/db" \
-  -v "$(pwd)/my-settings.js:/app/settings.js" \
+  -v "$(pwd)/settings.js:/app/settings.js" \
   fit-reader:latest
 ```
 
-或者在 `docker-compose.yml` 中取消 `- ./settings.js:/app/settings.js` 的注释。
+或者在 `docker-compose.yml` 中保留 `- ./settings.js:/app/settings.js` 挂载。
+
+> 注意：库中已有 athlete 配置时，`settings.js` 里的 `ATHLETE` 不再生效（它只是出厂默认值）；改阈值需要重建容器或重启。
 
 ---
 

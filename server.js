@@ -5,11 +5,13 @@
  *   - 静态前端（web/ 目录：训练库仪表盘 + 单次训练详情 + 上传分析 + AI 报告）
  *   - REST API：
  *       GET  /api/overview              仪表盘数据（骑手参数/月汇总/趋势/训练清单/AI 配置状态）
+ *       GET  /api/athlete               当前骑手参数（库值覆盖 settings.js 默认值 + configured 标记）
+ *       POST /api/athlete               {ftp_watts?, max_hr?, weight_kg?} 更新骑手参数（写训练库并即时生效）
  *       GET  /api/activity?name=x.fit   单次训练完整 summary JSON
  *       GET  /api/records?name=x.fit    逐秒时序（抽稀到 ≤1400 点，供前端画图）
  *       POST /api/upload?filename=x.fit 上传 FIT（原始字节作 body）→ 分析并入库 → 返回 summary
  *       GET  /api/ftp-estimate          基于最近窗口期骑行（功率峰曲线+心率交叉验证）科学估算 FTP
- *       POST /api/ftp-apply             {ftp_w} 把估算 FTP 写回 settings.js 并立即生效
+ *       POST /api/ftp-apply             {ftp_w} 把估算 FTP 写入训练库骑手参数并立即生效
  *       POST /api/ai                    AI 报告：{mode:'review'|'plan'|'taper'|'compare', ...}
  *                                       未配置 FIT_AI_API_KEY 时返回提示词供手动复制
  *
@@ -35,6 +37,9 @@ import {
   recentActivities,
   computeForm,
   cyclingSummariesSince,
+  syncAthleteFromDb,
+  getAthleteState,
+  setAthlete,
 } from "./db.js";
 import {
   buildReviewPrompt,
@@ -51,9 +56,6 @@ const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const WEB_DIR = path.join(ROOT, "web");
 const OUTPUT_DIR = path.resolve(process.env.FIT_OUTPUT_DIR || "output");
 const INPUT_DIR = path.resolve(process.env.FIT_INPUT_DIR || "input");
-const SETTINGS_PATH = path.resolve(
-  process.env.FIT_SETTINGS_PATH || path.join(ROOT, "settings.js"),
-);
 const PORT = Number(process.env.PORT) || 3000;
 
 const MIME = {
@@ -175,14 +177,39 @@ function buildPromptForMode(body) {
 async function handleApi(req, res, url) {
   // GET /api/overview
   if (req.method === "GET" && url.pathname === "/api/overview") {
+    const { athlete, configured } = getAthleteState();
     sendJson(res, 200, {
-      athlete: ATHLETE,
+      athlete,
+      athlete_configured: configured,
       ai: aiConfigInfo(),
       monthly: monthlySummary(6),
       trend: trendMonthly(),
       form_daily: recentFormDaily(90),
       activities: listActivities(100),
     });
+    return;
+  }
+
+  // GET /api/athlete  当前骑手参数（库值覆盖 settings.js 默认值）
+  if (req.method === "GET" && url.pathname === "/api/athlete") {
+    sendJson(res, 200, getAthleteState());
+    return;
+  }
+
+  // POST /api/athlete  {ftp_watts?, max_hr?, weight_kg?}  更新骑手参数（写训练库并即时生效）
+  if (req.method === "POST" && url.pathname === "/api/athlete") {
+    let body;
+    try {
+      body = JSON.parse((await readBody(req, 1024 * 1024)).toString("utf8"));
+    } catch {
+      return sendJson(res, 400, { error: "请求体需为 JSON" });
+    }
+    try {
+      const athlete = setAthlete(body ?? {});
+      sendJson(res, 200, { applied: true, athlete });
+    } catch (e) {
+      sendJson(res, 400, { error: e.message });
+    }
     return;
   }
 
@@ -285,7 +312,7 @@ async function handleApi(req, res, url) {
     return;
   }
 
-  // POST /api/ftp-apply  {ftp_w}  把估算出的 FTP 写回 settings.js 并立即生效
+  // POST /api/ftp-apply  {ftp_w}  把估算出的 FTP 写入训练库骑手参数并立即生效
   if (req.method === "POST" && url.pathname === "/api/ftp-apply") {
     let body;
     try {
@@ -304,13 +331,8 @@ async function handleApi(req, res, url) {
       });
     }
     const ftpInt = Math.round(ftpW);
-    const src = fs.readFileSync(SETTINGS_PATH, "utf8");
-    const replaced = src.replace(/ftp_watts:\s*\d+/, `ftp_watts: ${ftpInt}`);
-    if (replaced === src)
-      return sendJson(res, 500, { error: "settings.js 中未找到 ftp_watts 配置行" });
-    fs.writeFileSync(SETTINGS_PATH, replaced);
-    // 导出对象的属性可变：原地更新让当前进程立即生效（无需重启）
-    ATHLETE.ftp_watts = ftpInt;
+    // 写入训练库 settings 表并原地更新 ATHLETE，当前进程立即生效（无需重启）
+    setAthlete({ ftp_watts: ftpInt });
     sendJson(res, 200, { applied: true, ftp_w: ftpInt });
     return;
   }
@@ -382,6 +404,8 @@ if (isMain) {
   } catch {
     // .env 不存在时静默跳过（环境变量仍可直接 export 提供）
   }
+  // 骑手参数以训练库为准：启动时把库值合并进 ATHLETE（之后 /api/athlete、/api/ftp-apply 原地更新）
+  syncAthleteFromDb();
   createServer().listen(PORT, () => {
     console.log(`fit-reader Web 界面: http://localhost:${PORT}`);
     if (!isAiConfigured())

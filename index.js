@@ -22,6 +22,7 @@ import {
   trendMonthly,
   recentActivities,
   recentFormDaily,
+  syncAthleteFromDb,
 } from "./db.js";
 import {
   buildReviewPrompt,
@@ -493,6 +494,8 @@ export function cadencePowerAnalysis(records) {
 
 /** 解析一个 FIT 文件，输出 CSV + summary JSON，返回 { csvPath, jsonPath, summary } */
 export async function analyzeFile(input, outDir) {
+  // 骑手参数以训练库为准（Web 设置页维护）；库中无配置时保持 settings.js 默认值
+  syncAthleteFromDb();
   const content = fs.readFileSync(input);
   const parser = new FitParser({
     force: true,
@@ -988,6 +991,9 @@ function emitTaperPrompt(raceDate, outPath) {
 
 async function main() {
   const input = process.argv[2];
+
+  // 提示词命令（--review/--plan 等）不经过 analyzeFile，这里先同步一次骑手参数
+  syncAthleteFromDb();
 
   // ---- 训练库查询子命令 ----
   if (input === "--monthly") {

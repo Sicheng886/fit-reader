@@ -63,11 +63,18 @@ function formNote(tsb) {
 const state = {
   overview: null, // /api/overview 缓存
   chartToggles: {}, // 详情页时序图系列开关
+  firstRun: false, // 训练库未配置骑手参数（首开引导到设置页）
 };
 
 async function loadOverview(force = false) {
   if (!state.overview || force) state.overview = await api("/api/overview");
   return state.overview;
+}
+
+/** 顶栏骑手参数条（启动 / 保存设置 / 采纳 FTP 三处共用） */
+function renderAthleteChip(a) {
+  a = a || {};
+  $("#athleteChip").innerHTML = `FTP <b>${a.ftp_watts ?? "?"}W</b> · HRmax <b>${a.max_hr ?? "?"}</b> · <b>${a.weight_kg ?? "?"}kg</b>`;
 }
 
 // ---------------- SVG 图表 ----------------
@@ -386,7 +393,7 @@ function ftpEstimateHtml(r) {
     diff === 0
       ? ""
       : e.confidence === "high"
-        ? `<button class="btn sm" id="ftpApplyBtn"><span>采纳 ${e.ftp_w}W 并写入 settings.js</span></button>`
+        ? `<button class="btn sm" id="ftpApplyBtn"><span>采纳 ${e.ftp_w}W 并保存到训练库</span></button>`
         : `<span class="muted">置信度不足，不建议写回 — 请先按下方清单补充数据后重新估算</span>`;
 
   return `<div class="panel">
@@ -400,7 +407,7 @@ function ftpEstimateHtml(r) {
       </div>
       <div class="muted">参考区间 ${e.range_low}–${e.range_high}W · ${esc(diffTxt)}</div>
       ${applyHtml}
-      <span class="ftp-applied muted" style="display:none">已写回 settings.js 并即时生效</span>
+      <span class="ftp-applied muted" style="display:none">已保存到训练库并即时生效</span>
     </div>
     <table class="data-table" style="margin-top:16px">
       <tr><th>方法</th><th>结果</th><th>依据</th></tr>
@@ -421,7 +428,7 @@ async function applyFtp(ftpW) {
     });
     const a = state.overview?.athlete || {};
     state.overview = null; // 概览缓存作废，下次加载取新 FTP
-    $("#athleteChip").innerHTML = `FTP <b>${r.ftp_w}W</b> · HRmax <b>${a.max_hr ?? "?"}</b> · <b>${a.weight_kg ?? "?"}kg</b>`;
+    renderAthleteChip({ ...a, ftp_watts: r.ftp_w });
     if (btn) btn.style.display = "none";
     const done = $(".ftp-applied");
     if (done) done.style.display = "";
@@ -532,7 +539,7 @@ async function renderActivityDetail(name) {
   let ftpCallout = "";
   const est = p.ftp_estimate;
   if (est && est.suggestion === "consider_update")
-    ftpCallout = `<div class="callout">FTP 估算 ${est.estimated_ftp_w}W（20min 峰功率 × 0.95），高于当前配置 ${est.current_ftp_w}W — 建议更新 settings.js 中的 ATHLETE.ftp_watts</div>`;
+    ftpCallout = `<div class="callout">FTP 估算 ${est.estimated_ftp_w}W（20min 峰功率 × 0.95），高于当前配置 ${est.current_ftp_w}W — 建议到「设置」页更新 FTP</div>`;
   else if (est && est.suggestion === "consider_recheck")
     ftpCallout = `<div class="callout info">FTP 估算 ${est.estimated_ftp_w}W，低于当前配置 ${est.current_ftp_w}W — 可能状态欠佳或本次未尽全力，建议实测确认后再调整</div>`;
 
@@ -865,6 +872,65 @@ async function runAi(payload, panel, body) {
   }
 }
 
+// ---------------- 视图：设置 ----------------
+
+async function renderSettings() {
+  app.innerHTML = `<div class="empty loading">加载中…</div>`;
+  const { athlete, configured } = await api("/api/athlete");
+  const banner =
+    state.firstRun && !configured
+      ? `<div class="callout info">首次使用：请先设置骑手参数（FTP / 最大心率 / 体重），它们是所有派生指标准确性的前提。保存后存入训练库，之后可随时回到本页调整。</div>`
+      : "";
+  app.innerHTML = `
+    <div class="view-title"><h1>设置</h1><span class="sub">骑手参数保存在训练库中，分析新文件时自动生效</span></div>
+    ${banner}
+    <div class="panel">
+      <div class="panel-title">骑手参数</div>
+      <div class="settings-form">
+        <label>FTP 功能阈值功率（W）
+          <input type="number" id="setFtp" min="50" max="500" step="1" value="${athlete.ftp_watts ?? ""}">
+        </label>
+        <label>最大心率（bpm）
+          <input type="number" id="setMaxHr" min="120" max="230" step="1" value="${athlete.max_hr ?? ""}">
+        </label>
+        <label>体重（kg）
+          <input type="number" id="setWeight" min="30" max="200" step="0.1" value="${athlete.weight_kg ?? ""}">
+        </label>
+      </div>
+      <div style="margin-top:16px;display:flex;gap:12px;align-items:center">
+        <button class="btn" id="btnSaveAthlete"><span>保存</span></button>
+        <span class="muted" id="athleteSaved" style="display:none">已保存 ✓ 后续分析将使用新参数</span>
+      </div>
+      <p class="muted" style="margin-top:16px;font-size:12px">
+        说明：修改参数只影响之后分析的训练；已归档训练的指标按当时口径保留。
+        分区定义与算法阈值（间歇/爬坡识别等）仍在 settings.js 中调整。
+      </p>
+    </div>`;
+  $("#btnSaveAthlete").addEventListener("click", async () => {
+    const btn = $("#btnSaveAthlete");
+    btn.disabled = true;
+    try {
+      const r = await api("/api/athlete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ftp_watts: Number($("#setFtp").value),
+          max_hr: Number($("#setMaxHr").value),
+          weight_kg: Number($("#setWeight").value),
+        }),
+      });
+      state.firstRun = false;
+      state.overview = null; // 概览缓存作废，下次加载取新参数
+      renderAthleteChip(r.athlete);
+      $("#athleteSaved").style.display = "";
+    } catch (e) {
+      alert(`保存失败：${e.message}`);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+}
+
 // ---------------- 路由 ----------------
 
 function setActiveTab(view) {
@@ -876,10 +942,17 @@ async function route() {
   const hash = location.hash || "#/dashboard";
   const [, view, arg] = hash.split("/");
   try {
+    // 首次使用且未配置骑手参数：落到设置页引导（用户可手动切走，不强制锁定）
+    if (state.firstRun && (!view || view === "dashboard")) {
+      setActiveTab("settings");
+      await renderSettings();
+      return;
+    }
     if (view === "activities") { setActiveTab("activities"); await renderActivities(); }
     else if (view === "activity" && arg) { setActiveTab("activities"); await renderActivityDetail(decodeURIComponent(arg)); }
     else if (view === "upload") { setActiveTab("upload"); renderUpload(); }
     else if (view === "ai") { setActiveTab("ai"); await renderAI(); }
+    else if (view === "settings") { setActiveTab("settings"); await renderSettings(); }
     else { setActiveTab("dashboard"); await renderDashboard(); }
   } catch (e) {
     app.innerHTML = `<div class="callout">加载失败：${esc(e.message)}</div>`;
@@ -892,11 +965,11 @@ $("#tabs").addEventListener("click", (e) => {
 });
 window.addEventListener("hashchange", route);
 
-// 启动：拉概览填顶栏骑手参数，再进路由
+// 启动：拉概览填顶栏骑手参数；未配置过骑手参数时首开引导到设置页，再进路由
 loadOverview()
   .then((ov) => {
-    const a = ov.athlete || {};
-    $("#athleteChip").innerHTML = `FTP <b>${a.ftp_watts ?? "?"}W</b> · HRmax <b>${a.max_hr ?? "?"}</b> · <b>${a.weight_kg ?? "?"}kg</b>`;
+    renderAthleteChip(ov.athlete);
+    if (!ov.athlete_configured) state.firstRun = true;
   })
   .catch(() => {})
   .finally(route);

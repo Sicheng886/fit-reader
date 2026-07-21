@@ -4,6 +4,8 @@
  *   - 每次分析后把 summary 入库（按文件名去重，重复分析覆盖更新）
  *   - 基于历史 TSS 计算 CTL / ATL / TSB（体能/疲劳/状态）
  *   - 月汇总、趋势数据与提示词上下文查询（recentActivities / recentFormDaily）
+ *   - settings 表：骑手参数（athlete）持久化，Web 设置页维护；
+ *     syncAthleteFromDb() 把库值原地合并进 settings.js 的 ATHLETE 导出对象
  *
  * 数据库文件固定为 ./db/fitness.db（可用环境变量 FIT_DB_PATH 覆盖，供测试隔离），
  * 不存在时自动创建。
@@ -12,6 +14,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { ATHLETE, FTP_ESTIMATION } from "./settings.js";
 
 const DB_PATH = process.env.FIT_DB_PATH || path.resolve("db", "fitness.db");
 
@@ -51,6 +54,11 @@ function openDb() {
       created_at TEXT DEFAULT (datetime('now'))
     );
     CREATE INDEX IF NOT EXISTS idx_ai_reports_mode_created ON ai_reports(mode, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
   `);
   return _db;
 }
@@ -61,6 +69,73 @@ export function closeDb() {
     _db.close();
     _db = null;
   }
+}
+
+// ---------------- 骑手参数（存 settings 表，Web 设置页维护） ----------------
+
+/**
+ * 从训练库读取 athlete 行并原地覆盖 settings.js 的 ATHLETE 导出对象。
+ * 库中无 athlete 行时保持 settings.js 出厂默认值。
+ * index.js（analyzeFile / main）与 server.js 启动时调用，
+ * 利用"导出对象属性可变"让所有读 ATHLETE 的模块看到最新值。
+ */
+export function syncAthleteFromDb() {
+  const db = openDb();
+  const row = db.prepare(`SELECT value FROM settings WHERE key = 'athlete'`).get();
+  if (!row) return;
+  try {
+    Object.assign(ATHLETE, JSON.parse(row.value));
+  } catch {
+    // 行内容损坏时忽略，保持默认值
+  }
+}
+
+/** 当前骑手参数状态：生效值（库行覆盖默认值）+ 是否已在库中配置（Web 首开引导用） */
+export function getAthleteState() {
+  const db = openDb();
+  const row = db.prepare(`SELECT value FROM settings WHERE key = 'athlete'`).get();
+  const athlete = { ...ATHLETE };
+  if (row) {
+    try {
+      Object.assign(athlete, JSON.parse(row.value));
+    } catch {
+      // 行内容损坏时按未配置之外的默认值返回
+    }
+  }
+  return { athlete, configured: !!row };
+}
+
+// 骑手参数合法范围（FTP 上下限复用 FTP_ESTIMATION 的采纳写回口径）
+const ATHLETE_LIMITS = {
+  ftp_watts: [FTP_ESTIMATION.apply_min_w, FTP_ESTIMATION.apply_max_w],
+  max_hr: [120, 230],
+  weight_kg: [30, 200],
+};
+
+/**
+ * 更新骑手参数（允许只给部分字段）：校验 → 合并当前值写库 → 原地生效。
+ * 非法值抛 Error（中文 message，Web API 直接透传给前端）。
+ */
+export function setAthlete(partial) {
+  const updates = {};
+  for (const key of Object.keys(ATHLETE_LIMITS)) {
+    if (partial?.[key] == null) continue;
+    const v = Number(partial[key]);
+    const [lo, hi] = ATHLETE_LIMITS[key];
+    if (!Number.isFinite(v) || v < lo || v > hi)
+      throw new Error(`${key} 需在 ${lo}–${hi} 之间`);
+    updates[key] = v;
+  }
+  if (!Object.keys(updates).length)
+    throw new Error("至少需要提供一个字段：ftp_watts / max_hr / weight_kg");
+  const merged = { ...ATHLETE, ...updates };
+  const db = openDb();
+  db.prepare(
+    `INSERT INTO settings (key, value) VALUES ('athlete', ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+  ).run(JSON.stringify(merged));
+  Object.assign(ATHLETE, merged); // 原地生效，当前进程无需重启
+  return { ...ATHLETE };
 }
 
 /** 保存 AI 分析报告；每个 mode 仅保留最近 10 条 */

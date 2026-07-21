@@ -180,7 +180,7 @@ main {
 }
 .btn.ghost:hover { border-color: var(--volt); color: var(--volt); }
 
-select, input[type="date"], input[type="file"] {
+select, input[type="date"], input[type="file"], input[type="number"] {
   background: var(--panel-2);
   border: 1px solid var(--line);
   color: var(--text);
@@ -191,6 +191,22 @@ select, input[type="date"], input[type="file"] {
   outline: none;
 }
 select:focus, input:focus { border-color: var(--volt); }
+
+/* 设置页表单 */
+.settings-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 14px;
+  max-width: 640px;
+}
+.settings-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.settings-form input { width: 100%; box-sizing: border-box; }
 
 .muted { color: var(--muted); }
 .mono { font-family: var(--mono); }

@@ -50,19 +50,19 @@ node index.js input/MAGENE_C506SE_2026-07-17_202219_1273797.fit output/
 
 单文件模式成功后会打印两个输出文件路径及 summary JSON 全文；批量模式逐文件打印一行进度（失败不中断）并在结尾打印成功/失败计数；解析失败时输出 `解析失败: <message>` 并以退出码 1 结束。
 
-### 必须修改的骑手参数
+### 骑手参数与算法阈值
 
-`settings.js` 中的 `ATHLETE` 常量（`ftp_watts` / `max_hr` / `weight_kg`）是所有派生指标准确性的前提，换骑手必须改这里。当前值为 `ftp: 118W, max_hr: 195, weight: 60kg`。功率/心率分区及间歇识别、爬坡提取、踏频分析、数据质量的算法阈值（`POWER_ZONES` / `HR_ZONES` / `INTERVAL_DETECTION` / `CLIMB_DETECTION` / `CADENCE_ANALYSIS` / `DATA_QUALITY`）也都集中在 `settings.js`。
+骑手参数（`ftp_watts` / `max_hr` / `weight_kg`）**以训练库为准**：存于 SQLite `settings` 表（key=`athlete`），由 Web 设置页（`POST /api/athlete`）维护；`settings.js` 里的 `ATHLETE` 只是出厂默认值（库中无配置时兜底）。`db.js` 的 `syncAthleteFromDb()` 把库值原地合并进 `ATHLETE` 导出对象（`analyzeFile()` 开头、`main()` 入口、`server.js` 启动时各调一次），`setAthlete()` 校验后写库并原地生效。功率/心率分区及间歇识别、爬坡提取、踏频分析、数据质量的算法阈值（`POWER_ZONES` / `HR_ZONES` / `INTERVAL_DETECTION` / `CLIMB_DETECTION` / `CADENCE_ANALYSIS` / `DATA_QUALITY`）仍集中在 `settings.js`。
 
 ## 代码结构
 
-- `settings.js`：全部可调配置（骑手参数、分区、算法阈值），纯数据、无逻辑。
-- `db.js`：训练库模块。基于 Node 内置 `node:sqlite`（≥22.5，零第三方依赖），数据库默认 `./db/fitness.db`（可用环境变量 `FIT_DB_PATH` 覆盖，供测试隔离；懒打开，目录/表不存在时自动创建）；提供 `upsertActivity`（按文件名去重）、`computeForm`（CTL/ATL/TSB 指数加权）、`monthlySummary`（逐月汇总与强度分类）、`trendMonthly`（逐月趋势数据）、`recentFormDaily`（最近 N 天逐日 form 序列）、`recentActivities`（近期训练简明清单，供提示词上下文）、`cyclingSummariesSince`（最近 N 天骑行完整 summary，FTP 历史估算用）、`listActivities` / `getActivitySummary`（Web 界面列表与详情查询）、`closeDb`（测试收尾释放句柄）。
+- `settings.js`：算法配置（功率/心率分区、各分析阈值）+ 骑手参数出厂默认值（`ATHLETE`，训练库 settings 表无 athlete 行时兜底；Web 设置页保存后以库为准）。纯数据、无逻辑。
+- `db.js`：训练库模块。基于 Node 内置 `node:sqlite`（≥22.5，零第三方依赖），数据库默认 `./db/fitness.db`（可用环境变量 `FIT_DB_PATH` 覆盖，供测试隔离；懒打开，目录/表不存在时自动创建）；提供 `upsertActivity`（按文件名去重）、`computeForm`（CTL/ATL/TSB 指数加权）、`monthlySummary`（逐月汇总与强度分类）、`trendMonthly`（逐月趋势数据）、`recentFormDaily`（最近 N 天逐日 form 序列）、`recentActivities`（近期训练简明清单，供提示词上下文）、`cyclingSummariesSince`（最近 N 天骑行完整 summary，FTP 历史估算用）、`listActivities` / `getActivitySummary`（Web 界面列表与详情查询）、`syncAthleteFromDb` / `getAthleteState` / `setAthlete`（settings 表骑手参数：同步进 `ATHLETE`、查询状态、校验写库并原地生效）、`closeDb`（测试收尾释放句柄）。
 - `ftp.js`：FTP 历史估算（纯函数、无 IO）。`estimateFtpFromHistory(activities, athlete, cfg)` 基于窗口期内骑行的 5min/20min 峰功率做双方法互校——Morton 双参数 CP 模型（P(t)=CP+W′/t）+ Coggan 20min×0.95；心率交叉验证（锚点全力判定、功率/心率区间系统性偏移、心率漂移中位数）；数据不足时输出 `data_needs` 收集清单；返回估值/区间/置信度（high/medium/low）。阈值集中在 settings.js `FTP_ESTIMATION`。
 - `prompts.js`：AI 提示词模板库（P2）。`buildMetricGlossary()` 由 settings.js 动态生成指标口径说明；`buildReviewPrompt` / `buildPlanPrompt` / `buildTaperPrompt` / `buildComparePrompt` 四个场景模板拼装完整 Markdown（角色+口径+数据+固化问题清单）；`thinToWeekly()` 把逐日 form 序列抽稀为逐周点。纯函数、无 IO。
 - `ai.js`：AI API 客户端（P4）。OpenAI 兼容 chat/completions（Node 内置 fetch；Markdown 转 HTML 由 server.js 用 `marked` 处理，ai.js 本身不依赖 marked）；环境变量 `FIT_AI_API_KEY`（必填）/ `FIT_AI_BASE_URL`（默认 Kimi `https://api.moonshot.cn/v1`）/ `FIT_AI_MODEL`（默认 `moonshot-v1-32k`）/ `FIT_AI_TEMPERATURE`（可选，缺省不传）/ `FIT_AI_TIMEOUT_MS`（默认 5 分钟）/ `FIT_AI_STREAM`（是否启用流式，默认 false）/ `FIT_AI_STALL_MS`（流式空闲超时，默认 60s）；配置项调用时惰性读取，`.env` 由 server.js 入口通过 Node 内置 `process.loadEnvFile()` 注入（仅入口分支加载，测试 import 时不触发）；`isAiConfigured()` 供调用方判断退化为复制提示词模式。默认非流式 + 30 秒心跳日志。
-- `server.js`：Web 服务（P4，`npm run web`）。Node 内置 http，零依赖；静态托管 `web/` 前端 + REST API（`/api/overview` 仪表盘聚合、`/api/activity`、`/api/records` 时序抽稀 ≤1400 点、`POST /api/upload` 原始字节上传 FIT 即分析入库、`GET /api/ftp-estimate` FTP 历史估算、`POST /api/ftp-apply` 把估算 FTP 写回 settings.js 并原地更新 `ATHLETE.ftp_watts` 使当前进程即时生效，settings 路径可用 `FIT_SETTINGS_PATH` 覆盖供测试隔离、`POST /api/ai` 四场景 AI 报告/提示词、返回 `marked` 渲染后的 HTML、保存到 `ai_reports` 表并保留每 mode 最近 10 条、`GET /api/ai/reports`、`GET /api/ai/report`）；文件名参数一律 basename 防路径穿越；输出/输入目录可用 `FIT_OUTPUT_DIR` / `FIT_INPUT_DIR` 覆盖（测试隔离）。
-- `web/`：纯 HTML/CSS/JS SPA（P4），零依赖零构建：hash 路由（概览/训练/详情/上传/AI 分析）、手写 SVG 图表（多系列时序图各系列独立纵轴、CTL/ATL/TSB 趋势、分区分布、峰功率曲线）；AI 报告使用服务端 `marked` 渲染后的 HTML，并支持历史报告列表（每 mode 最近 10 条）；暗色平面科技运动风（荧光黄 volt 主色 + 斜切元素 + 等宽斜体大数字）。
+- `server.js`：Web 服务（P4，`npm run web`）。Node 内置 http，零依赖；静态托管 `web/` 前端 + REST API（`/api/overview` 仪表盘聚合（含 `athlete_configured` 首开引导标记）、`GET/POST /api/athlete` 骑手参数查询与更新（写训练库 settings 表并原地生效）、`/api/activity`、`/api/records` 时序抽稀 ≤1400 点、`POST /api/upload` 原始字节上传 FIT 即分析入库、`GET /api/ftp-estimate` FTP 历史估算、`POST /api/ftp-apply` 把估算 FTP 写入训练库骑手参数并原地更新 `ATHLETE` 使当前进程即时生效、`POST /api/ai` 四场景 AI 报告/提示词、返回 `marked` 渲染后的 HTML、保存到 `ai_reports` 表并保留每 mode 最近 10 条、`GET /api/ai/reports`、`GET /api/ai/report`）；文件名参数一律 basename 防路径穿越；输出/输入目录可用 `FIT_OUTPUT_DIR` / `FIT_INPUT_DIR` 覆盖（测试隔离）。
+- `web/`：纯 HTML/CSS/JS SPA（P4），零依赖零构建：hash 路由（概览/训练/详情/上传/AI 分析/设置）、手写 SVG 图表（多系列时序图各系列独立纵轴、CTL/ATL/TSB 趋势、分区分布、峰功率曲线）；设置页维护骑手参数（存训练库，未配置时首开自动引导）；AI 报告使用服务端 `marked` 渲染后的 HTML，并支持历史报告列表（每 mode 最近 10 条）；暗色平面科技运动风（荧光黄 volt 主色 + 斜切元素 + 等宽斜体大数字）。
 - `index.js`（约 800 行）：主脚本，内部组织为：
 
 | 区块 | 内容 |
@@ -86,10 +86,10 @@ node index.js input/MAGENE_C506SE_2026-07-17_202219_1273797.fit output/
 
 - 使用 ESM 语法（`import`/`export`），禁止使用 CommonJS 的 `require`/`module.exports`。
 - 注释与文档一律使用**中文**（本项目的主要自然语言），函数级注释说明算法口径（如"30s 滚动平均的四次方均根"）。
-- 主逻辑集中在 `index.js`：新功能优先加入"工具函数"区，保持纯函数、无状态；所有可调配置（骑手参数、分区、算法阈值）一律放进 `settings.js`，不要在 `index.js` 里硬编码常量。
+- 主逻辑集中在 `index.js`：新功能优先加入"工具函数"区，保持纯函数、无状态；分区定义与算法阈值一律放进 `settings.js`，不要在 `index.js` 里硬编码常量；骑手参数属于"会变的数据"，走训练库 settings 表（db.js `setAthlete`），不要新增文件型配置。
 - 数值处理惯例：缺数据统一用 `null` 表示（CSV 中留空，JSON 中字段可省略）；`undefined` 字段在输出前会被清理； rounding 口径写在代码里（如功率取整、海拔保留 1 位、速度保留 2 位）。
 - 算法须遵循运动科学标准口径（NP/IF/TSS 公式见 README"已完成的指标算法"一节），改算法时同步更新 README。
-- 核心指标依赖 `settings.js` 中的 `ATHLETE` 配置，修改常量时确认 README 中的示例配置是否需同步。
+- 核心指标依赖骑手参数（FTP / 最大心率 / 体重），生效值 = 训练库 settings 表 athlete 行（Web 设置页维护），库中无配置时回落 `settings.js` 的 `ATHLETE` 出厂默认值；改默认值时确认 README 中的示例配置是否需同步。
 
 ## 测试策略
 
@@ -98,7 +98,7 @@ node index.js input/MAGENE_C506SE_2026-07-17_202219_1273797.fit output/
 - `test/make_test_fit.mjs`：手写 FIT 二进制生成器（文件头/定义消息/数据消息/CRC-16），可生成骑行（含功率缺失/记录缺失/无时间戳坏记录/开发者字段）、跑步、游泳（length 消息）合成文件；也可直接 `node test/make_test_fit.mjs [目录]` 生成样例。
 - `test/unit.test.mjs`：指标算法纯函数单测（NP/peakAvg/分区/爬升去抖/间歇识别/心率漂移/FTP 估算/缺失检测/开发者字段 + ftp.js 历史估算：CP 模型/数据充分性/心率交叉验证各分支）。
 - `test/e2e.test.mjs`：端到端回归——合成 FIT → `analyzeFile` → 校验 CSV 行数与 summary 指标；训练库通过 `FIT_DB_PATH` 指向临时目录与真实库隔离（**必须在 import index.js 之前设置该环境变量**，db.js 在模块加载时定路径）。
-- `test/web.test.mjs`：Web 服务端到端——合成 FIT → `POST /api/upload` → 校验概览/详情/时序/AI 提示词接口与路径穿越防护；同时直接调用 `saveAiReport` / `listAiReports` / `getAiReport` 验证 AI 缓存表 10 条滚动限制；FTP 接口用 `upsertActivity` 注入合成骑行校验 `/api/ftp-estimate`，并用 `FIT_SETTINGS_PATH` 指向临时副本校验 `/api/ftp-apply`（不碰真实 settings.js）；同样用 `FIT_DB_PATH` / `FIT_OUTPUT_DIR` / `FIT_INPUT_DIR` 指向临时目录隔离（须在 import server.js 前设置），收尾先 `closeDb()` 释放 SQLite 句柄再删临时目录（Windows 文件锁）。
+- `test/web.test.mjs`：Web 服务端到端——合成 FIT → `POST /api/upload` → 校验概览/详情/时序/AI 提示词接口与路径穿越防护；同时直接调用 `saveAiReport` / `listAiReports` / `getAiReport` 验证 AI 缓存表 10 条滚动限制；FTP 接口用 `upsertActivity` 注入合成骑行校验 `/api/ftp-estimate`，并校验 `/api/ftp-apply` 与 `GET/POST /api/athlete`（写训练库 settings 表、部分更新、非法值 400）；同样用 `FIT_DB_PATH` / `FIT_OUTPUT_DIR` / `FIT_INPUT_DIR` 指向临时目录隔离（须在 import server.js 前设置），收尾先 `closeDb()` 释放 SQLite 句柄再删临时目录（Windows 文件锁）。
 
 修改指标算法后：① 跑 `npm test`；② 用 `input/` 下的真实 FIT 文件重跑批量分析做端到端验证；涉及训练库的改动还需验证 `--monthly` / `--trend` 与删库自动重建（`rm -rf db` 后重跑分析）。
 
