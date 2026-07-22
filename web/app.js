@@ -742,14 +742,23 @@ async function renderActivityDetail(name) {
           `AI 复盘报告（已缓存 #${reports[0].id}）` +
           `<button class="btn ghost" id="btnRegenReview" style="margin-left:auto"><span>重新生成</span></button>`;
         body.innerHTML = `<div class="ai-result">${cached.html}</div>`;
+        state.aiThread = {
+          file_name: name,
+          messages: [{ role: "assistant", content: cached.markdown }],
+        };
+        attachFollowUp(panel, body);
         $("#btnRegenReview").addEventListener("click", () =>
           runAi({ mode: "review", file_name: name }, panel, body),
         );
-      } else {
-        $("#btnAiReview").addEventListener("click", () =>
-          runAi({ mode: "review", file_name: name }, panel, body),
-        );
       }
+      // 顶部 AI 复盘按钮：已有报告时跳到底部，否则触发后台分析
+      $("#btnAiReview").addEventListener("click", () => {
+        if (panel.style.display !== "none") {
+          panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        } else {
+          runAi({ mode: "review", file_name: name }, panel, body);
+        }
+      });
     } catch (e) {
       // 即使历史报告接口出错，也不影响训练详情主内容
       $("#btnAiReview").addEventListener("click", () =>
@@ -965,7 +974,7 @@ async function runAi(payload, panel, body) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
-    if (r.configured && r.markdown) {
+    if (r.markdown) {
       body.innerHTML = `<div class="ai-result">${r.html || renderMarkdownFallback(r.markdown)}</div>`;
       state.aiThread = {
         file_name: payload.file_name,
@@ -975,7 +984,12 @@ async function runAi(payload, panel, body) {
       // 生成新报告后刷新历史列表
       const list = $("#aiReportList");
       if (list) loadReportList(list, $("#aiReportMode")?.value || "all");
-    } else {
+    } else if (r.accepted) {
+      body.innerHTML = `<div class="callout info">${esc(r.message || "AI 分析已提交，将在后台生成并保存。")}<br><span class="muted">请稍后从历史报告查看。</span></div>`;
+      // 在历史报告页面时刷新列表，让用户能看到后台生成的新报告
+      const list = $("#aiReportList");
+      if (list) loadReportList(list, $("#aiReportMode")?.value || "all");
+    } else if (r.prompt != null) {
       body.innerHTML = `
         <p class="muted" style="margin-bottom:10px">未配置 AI API，以下为完整提示词，复制到任意 AI 即可：</p>
         <button class="btn ghost" id="btnCopyPrompt" style="margin-bottom:12px"><span>复制提示词</span></button>
@@ -984,6 +998,8 @@ async function runAi(payload, panel, body) {
         await navigator.clipboard.writeText(r.prompt);
         e.target.textContent = "已复制 ✓";
       });
+    } else {
+      body.innerHTML = `<div class="callout">AI 返回异常：${esc(JSON.stringify(r))}</div>`;
     }
   } catch (e) {
     body.innerHTML = `<div class="callout">${esc(e.message)}</div>`;

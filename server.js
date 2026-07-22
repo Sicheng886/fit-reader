@@ -296,37 +296,37 @@ async function handleApi(req, res, url) {
       // 未配置密钥：退回 P2 模式，把提示词给前端供手动复制
       return sendJson(res, 200, { configured: false, prompt });
     }
-    try {
-      let chunkCount = 0, charCount = 0, heartbeats = 0;
-      const markdown = await callAI(prompt, {
-        onChunk: (delta) => {
-          chunkCount++;
-          charCount += delta.length;
-          if (chunkCount === 1) console.log("[AI] 开始接收流式 chunk...");
-          if (chunkCount % 5 === 0) {
-            console.log(
-              `[AI] 已接收 ${chunkCount} 个 chunk，累计 ${charCount} 字符`,
-            );
-          }
-        },
-        onHeartbeat: () => {
-          heartbeats++;
-          console.log(`[AI] 仍在生成中...（${heartbeats * 30}s）`);
-        },
-      });
-      const reportId = saveAiReport(body.mode, body, prompt, markdown);
-      const html = marked.parse(markdown, {
-        gfm: true,
-        headerIds: false,
-        mangle: false,
-      });
-      console.log(
-        `[AI] 完成：report_id=${reportId}，${chunkCount} 个 chunk，${charCount} 字符，心跳 ${heartbeats} 次`,
-      );
-      sendJson(res, 200, { configured: true, markdown, html, report_id: reportId });
-    } catch (e) {
-      sendJson(res, 502, { error: `AI 调用失败: ${e.message}`, prompt });
-    }
+    // 已配置：立即返回 202，由服务端在后台完成 AI 调用并保存；
+    // 用户可关闭页面，稍后从历史报告查看。
+    sendJson(res, 202, {
+      accepted: true,
+      message: "AI 分析已提交，将在后台生成并保存，请稍后从历史报告查看。",
+    });
+    (async () => {
+      try {
+        let chunkCount = 0, charCount = 0, heartbeats = 0;
+        const markdown = await callAI(prompt, {
+          onChunk: (delta) => {
+            chunkCount++;
+            charCount += delta.length;
+            if (chunkCount === 1) console.log("[AI] 开始接收流式 chunk...");
+            if (chunkCount % 5 === 0) {
+              console.log(`[AI] 已接收 ${chunkCount} 个 chunk，累计 ${charCount} 字符`);
+            }
+          },
+          onHeartbeat: () => {
+            heartbeats++;
+            console.log(`[AI] 仍在生成中...（${heartbeats * 30}s）`);
+          },
+        });
+        const reportId = saveAiReport(body.mode, body, prompt, markdown);
+        console.log(
+          `[AI] 完成：report_id=${reportId}，${chunkCount} 个 chunk，${charCount} 字符，心跳 ${heartbeats} 次`,
+        );
+      } catch (e) {
+        console.error(`[AI] 后台分析失败: ${e.message}`);
+      }
+    })();
     return;
   }
 
@@ -348,19 +348,11 @@ async function handleApi(req, res, url) {
         .map((m) => ({ role: m.role, content: String(m.content ?? "") }))
         .filter((m) => ["system", "user", "assistant"].includes(m.role));
       if (!messages.length) throw new Error("messages 格式无效");
-      // 如有 file_name，把原始 summary 作为补充上下文放在最前面
-      const name = safeName(body?.file_name);
-      if (name) {
-        const summary = getActivitySummary(name);
-        if (summary) {
-          messages.unshift({
-            role: "user",
-            content:
-              `以下是本次训练的完整数据（summary.json），供你回答后续问题时参考：\n\n` +
-              JSON.stringify(summary, null, 2),
-          });
-        }
-      }
+      // 以报告内容为主，不塞完整 summary.json；前置一句简洁回答的指令
+      messages.unshift({
+        role: "user",
+        content: "请基于下面的训练分析报告回答后续问题，保持简洁，不要展开原始数据。",
+      });
       let chunkCount = 0, charCount = 0, heartbeats = 0;
       const markdown = await callAI(messages, {
         onChunk: (delta) => {
