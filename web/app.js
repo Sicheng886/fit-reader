@@ -41,6 +41,19 @@ const sportLabel = (s) => SPORT_LABEL[s] || s || "未知";
 const sportBadge = (s) =>
   `<span class="sport-badge ${esc(s)}">${sportLabel(s)}</span>`;
 
+const CATEGORY_LABEL = {
+  training: "训练",
+  race: "比赛",
+  recovery: "恢复",
+  leisure: "休闲",
+};
+const categoryLabel = (c) => CATEGORY_LABEL[c] ?? c ?? "训练";
+const categoryBadge = (c) => {
+  const key = c || "training";
+  const cls = `cat-badge cat-${esc(key)}`;
+  return `<span class="${cls}">${esc(categoryLabel(key))}</span>`;
+};
+
 function fmtDur(sec) {
   if (sec == null) return "-";
   sec = Math.round(sec);
@@ -83,6 +96,7 @@ const state = {
   overview: null, // /api/overview 缓存
   chartToggles: {}, // 详情页时序图系列开关
   firstRun: false, // 训练库未配置骑手参数（首开引导到设置页）
+  aiThread: null, // 当前 AI 报告追问会话
 };
 
 async function loadOverview(force = false) {
@@ -256,7 +270,7 @@ async function loadReportList(container, mode = "all") {
   const rows = (await Promise.all(modes.map((m) => api(`/api/ai/reports?mode=${m}`))))
     .flatMap((r, i) => r.reports.map((rep) => ({ ...rep, mode: modes[i] })))
     .sort((a, b) => (a.created_at < b.created_at ? 1 : -1))
-    .slice(0, 10);
+    .slice(0, 30);
   if (!rows.length) {
     container.innerHTML = `<div class="empty">暂无 ${mode === "all" ? "" : MODE_LABEL[mode]} 缓存报告</div>`;
     return;
@@ -284,9 +298,15 @@ async function renderCachedReport(id) {
   panel.style.display = "";
   body.innerHTML = `<div class="loading">加载报告…</div>`;
   panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  state.aiThread = null;
   try {
     const r = await api(`/api/ai/report?id=${id}`);
     body.innerHTML = `<div class="ai-result">${r.html || renderMarkdownFallback(r.markdown)}</div>`;
+    state.aiThread = {
+      file_name: r.file_name,
+      messages: [{ role: "assistant", content: r.markdown }],
+    };
+    attachFollowUp(panel, body);
   } catch (e) {
     body.innerHTML = `<div class="callout">${esc(e.message)}</div>`;
   }
@@ -519,7 +539,7 @@ function monthlyTableHtml(months) {
 function actRowHtml(a) {
   return `<a class="act-row" href="#/activity/${encodeURIComponent(a.file_name)}">
     <span class="act-date">${esc(a.date)}</span>
-    <span class="act-name">${sportBadge(a.sport)}${esc(a.file_name)}</span>
+    <span class="act-name">${sportBadge(a.sport)}${categoryBadge(a.category)}${esc(a.file_name)}</span>
     <span class="act-stats">
       <span class="act-stat"><span class="v">${fmtDur(a.duration_sec)}</span><br><span class="k">时长</span></span>
       <span class="act-stat"><span class="v">${num(a.distance_km, 1)}</span><br><span class="k">km</span></span>
@@ -620,6 +640,15 @@ async function renderActivityDetail(name) {
       <a class="back-link" href="#/activities">← 训练列表</a>
       <h1>${sportBadge(a.sport)}${esc(a.date)}</h1>
       <span class="muted mono" style="font-size:12px">${esc(name)}</span>
+      <div class="category-bar">
+        <label for="actCategory">分类</label>
+        <select id="actCategory">
+          ${Object.entries(CATEGORY_LABEL)
+            .map(([k, v]) => `<option value="${k}" ${summary.activity?.category === k ? "selected" : ""}>${esc(v)}</option>`)
+            .join("")}
+        </select>
+        <span id="catSaved" class="muted" style="display:none">已保存</span>
+      </div>
       <span class="spacer"></span>
       <button class="btn" id="btnAiReview"><span>AI 复盘</span></button>
     </div>
@@ -679,6 +708,26 @@ async function renderActivityDetail(name) {
     );
   };
   redraw();
+
+  // 训练分类：详情页直接标记
+  const catSel = $("#actCategory");
+  const catSaved = $("#catSaved");
+  if (catSel) {
+    catSel.addEventListener("change", async () => {
+      catSaved.style.display = "none";
+      try {
+        await api("/api/activity/category", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name, category: catSel.value }),
+        });
+        catSaved.style.display = "";
+        state.overview = null; // 列表页分类缓存失效
+      } catch (e) {
+        alert(`分类保存失败：${e.message}`);
+      }
+    });
+  }
 
   // AI 复盘：自动加载本训练缓存的最新 review 报告；没有则显示按钮，点击生成
   const panel = $("#aiPanel"), body = $("#aiBody");
@@ -875,7 +924,7 @@ async function renderAI() {
       <div id="aiBody"></div>
     </div>
     <div class="panel">
-      <div class="panel-title">历史 AI 报告（每类最近 10 条，自动滚动保留）</div>
+      <div class="panel-title">历史 AI 报告（每类最近 30 条，自动滚动保留）</div>
       <div style="margin-bottom:12px">
         <select id="aiReportMode">
           <option value="all">全部</option>
@@ -909,6 +958,7 @@ async function runAi(payload, panel, body) {
   panel.style.display = "";
   body.innerHTML = `<div class="loading">AI 分析中，可能需要 30-60 秒…</div>`;
   panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  state.aiThread = null; // 每次生成新报告时重置追问会话
   try {
     const r = await api("/api/ai", {
       method: "POST",
@@ -917,6 +967,11 @@ async function runAi(payload, panel, body) {
     });
     if (r.configured && r.markdown) {
       body.innerHTML = `<div class="ai-result">${r.html || renderMarkdownFallback(r.markdown)}</div>`;
+      state.aiThread = {
+        file_name: payload.file_name,
+        messages: [{ role: "assistant", content: r.markdown }],
+      };
+      attachFollowUp(panel, body);
       // 生成新报告后刷新历史列表
       const list = $("#aiReportList");
       if (list) loadReportList(list, $("#aiReportMode")?.value || "all");
@@ -933,6 +988,71 @@ async function runAi(payload, panel, body) {
   } catch (e) {
     body.innerHTML = `<div class="callout">${esc(e.message)}</div>`;
   }
+}
+
+/** 在 AI 报告后附加“继续提问”区 */
+function attachFollowUp(panel, body) {
+  if (!state.aiThread) return;
+  const wrap = document.createElement("div");
+  wrap.className = "ai-follow-up";
+  wrap.innerHTML = `
+    <div class="follow-up-title">继续提问</div>
+    <div class="ai-chat" id="aiChat"></div>
+    <div class="follow-up-input">
+      <textarea id="followQuestion" rows="2" placeholder="基于上方报告继续提问…"></textarea>
+      <button class="btn sm" id="btnFollowAsk"><span>提问</span></button>
+    </div>`;
+  body.appendChild(wrap);
+
+  const input = $("#followQuestion", wrap);
+  const btn = $("#btnFollowAsk", wrap);
+  const chat = $("#aiChat", wrap);
+
+  const ask = async () => {
+    const q = input.value.trim();
+    if (!q) return;
+    input.value = "";
+    state.aiThread.messages.push({ role: "user", content: q });
+    renderChatBubble(chat, "user", q);
+    btn.disabled = true;
+    btn.innerHTML = "<span>思考中…</span>";
+    try {
+      const r = await api("/api/ai/follow-up", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          file_name: state.aiThread.file_name,
+          messages: state.aiThread.messages,
+        }),
+      });
+      state.aiThread.messages.push({ role: "assistant", content: r.markdown });
+      renderChatBubble(chat, "assistant", r.html || renderMarkdownFallback(r.markdown));
+    } catch (e) {
+      renderChatBubble(chat, "assistant", `<div class="callout">${esc(e.message)}</div>`);
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = "<span>提问</span>";
+    }
+  };
+
+  btn.addEventListener("click", ask);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      ask();
+    }
+  });
+}
+
+function renderChatBubble(container, role, content) {
+  const el = document.createElement("div");
+  el.className = `chat-bubble ${role}`;
+  el.innerHTML =
+    role === "user"
+      ? `<p>${esc(content)}</p>`
+      : `<div class="ai-result">${content}</div>`;
+  container.appendChild(el);
+  el.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
 // ---------------- 视图：设置 ----------------

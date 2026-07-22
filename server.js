@@ -40,6 +40,8 @@ import {
   syncAthleteFromDb,
   getAthleteState,
   setAthlete,
+  setActivityCategory,
+  isValidCategory,
 } from "./db.js";
 import {
   buildReviewPrompt,
@@ -215,6 +217,27 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  // POST /api/activity/category {name, category}
+  if (req.method === "POST" && url.pathname === "/api/activity/category") {
+    let body;
+    try {
+      body = JSON.parse((await readBody(req, 1024 * 1024)).toString("utf8"));
+    } catch {
+      return sendJson(res, 400, { error: "请求体需为 JSON" });
+    }
+    const name = safeName(body?.name);
+    if (!name) return sendJson(res, 400, { error: "name 参数无效" });
+    if (!isValidCategory(body?.category))
+      return sendJson(res, 400, { error: "category 需为 training/race/recovery/leisure" });
+    try {
+      setActivityCategory(name, body.category);
+      sendJson(res, 200, { ok: true });
+    } catch (e) {
+      sendJson(res, 404, { error: e.message });
+    }
+    return;
+  }
+
   // GET /api/activity?name=x.fit
   if (req.method === "GET" && url.pathname === "/api/activity") {
     const name = safeName(url.searchParams.get("name"));
@@ -307,6 +330,64 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  // POST /api/ai/follow-up 基于已有报告继续提问（不缓存）
+  if (req.method === "POST" && url.pathname === "/api/ai/follow-up") {
+    let body;
+    try {
+      body = JSON.parse((await readBody(req, 1024 * 1024)).toString("utf8"));
+    } catch {
+      return sendJson(res, 400, { error: "请求体需为 JSON" });
+    }
+    if (!isAiConfigured())
+      return sendJson(res, 400, { error: "未配置 FIT_AI_API_KEY，无法使用追问" });
+    const msgs = body?.messages;
+    if (!Array.isArray(msgs) || msgs.length === 0)
+      return sendJson(res, 400, { error: "messages 不能为空数组" });
+    try {
+      const messages = msgs
+        .map((m) => ({ role: m.role, content: String(m.content ?? "") }))
+        .filter((m) => ["system", "user", "assistant"].includes(m.role));
+      if (!messages.length) throw new Error("messages 格式无效");
+      // 如有 file_name，把原始 summary 作为补充上下文放在最前面
+      const name = safeName(body?.file_name);
+      if (name) {
+        const summary = getActivitySummary(name);
+        if (summary) {
+          messages.unshift({
+            role: "user",
+            content:
+              `以下是本次训练的完整数据（summary.json），供你回答后续问题时参考：\n\n` +
+              JSON.stringify(summary, null, 2),
+          });
+        }
+      }
+      let chunkCount = 0, charCount = 0, heartbeats = 0;
+      const markdown = await callAI(messages, {
+        onChunk: (delta) => {
+          chunkCount++;
+          charCount += delta.length;
+          if (chunkCount === 1) console.log("[AI follow-up] 开始接收流式 chunk...");
+          if (chunkCount % 5 === 0) {
+            console.log(`[AI follow-up] 已接收 ${chunkCount} 个 chunk，累计 ${charCount} 字符`);
+          }
+        },
+        onHeartbeat: () => {
+          heartbeats++;
+          console.log(`[AI follow-up] 仍在生成中...（${heartbeats * 30}s）`);
+        },
+      });
+      const html = marked.parse(markdown, {
+        gfm: true,
+        headerIds: false,
+        mangle: false,
+      });
+      sendJson(res, 200, { markdown, html });
+    } catch (e) {
+      sendJson(res, 502, { error: `AI 追问失败: ${e.message}` });
+    }
+    return;
+  }
+
   // GET /api/ftp-estimate  基于最近窗口期骑行（功率峰曲线+心率）科学估算 FTP
   if (req.method === "GET" && url.pathname === "/api/ftp-estimate") {
     const acts = cyclingSummariesSince(FTP_ESTIMATION.window_days);
@@ -344,7 +425,7 @@ async function handleApi(req, res, url) {
     const mode = url.searchParams.get("mode");
     if (!mode || !/^(review|plan|taper|compare)$/.test(mode))
       return sendJson(res, 400, { error: "mode 参数需为 review/plan/taper/compare" });
-    sendJson(res, 200, { mode, reports: listAiReports(mode, 10) });
+    sendJson(res, 200, { mode, reports: listAiReports(mode, 30) });
     return;
   }
 

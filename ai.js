@@ -81,11 +81,15 @@ async function readStream(resp, onChunk) {
  * 默认非流式：长提示词在部分 API 上会被整体生成后再下发，
  * 此时流式不会吐字，非流式 + 心跳日志更稳。
  *
- * @param {string} prompt 完整提示词
+ * 支持两种调用方式：
+ * 1. 传入单条字符串 prompt，作为单条 user 消息发送。  
+ * 2. 传入 messages 数组，直接作为 chat/completions 的 messages 参数（用于追问多轮对话）。
+ *
+ * @param {string|Array<{role:string, content:string}>} promptOrMessages 单条提示词或多轮消息数组
  * @param {{ onChunk?: (delta: string) => void, onHeartbeat?: () => void, timeoutMs?: number }} opts
  */
 export async function callAI(
-  prompt,
+  promptOrMessages,
   { onChunk, onHeartbeat, timeoutMs } = {},
 ) {
   const key = process.env.FIT_AI_API_KEY;
@@ -94,9 +98,12 @@ export async function callAI(
   const effectiveTimeoutMs = timeoutMs ?? parseTimeout("FIT_AI_TIMEOUT_MS", 300000);
   const useStream = process.env.FIT_AI_STREAM === "true" || process.env.FIT_AI_STREAM === "1";
 
+  const messages = Array.isArray(promptOrMessages)
+    ? promptOrMessages
+    : [{ role: "user", content: promptOrMessages }];
   const request = {
     model,
-    messages: [{ role: "user", content: prompt }],
+    messages,
     stream: useStream,
   };
   if (process.env.FIT_AI_TEMPERATURE != null)

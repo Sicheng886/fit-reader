@@ -60,14 +60,26 @@ function assemble(dataSections, questions) {
 
 // ---------------- 场景模板 ----------------
 
+const CATEGORY_NAMES = {
+  training: "训练",
+  race: "比赛",
+  recovery: "恢复",
+  leisure: "休闲",
+};
+
 /**
  * 单次复盘：传入某次训练的 summary.json 对象。
  */
 export function buildReviewPrompt(summary) {
+  const cat = summary?.activity?.category ?? "training";
+  const catName = CATEGORY_NAMES[cat] ?? "训练";
   return assemble(
-    [`## 训练数据（单次骑行汇总）\n\n${jsonBlock(summary)}`],
     [
-      "判断这次训练的类型（恢复/有氧耐力/甜区/阈值/间歇/比赛模拟等），并说明依据。",
+      `## 训练数据（单次骑行汇总）\n\n用户已将本次记录分类为：**${catName}**。请基于该分类进行解读；` +
+        `如果是比赛，请按比赛而非日常训练来评估强度与恢复建议。\n\n${jsonBlock(summary)}`,
+    ],
+    [
+      "参考用户标记的分类，判断本次记录的训练/比赛属性，并说明依据。",
       "评估功率与心率的强度分布是否合理：对该训练类型而言，各区时间占比是否符合预期？",
       "评估心率漂移（有氧解耦）：数值说明什么？对有氧基础训练有何指示？",
       "如有间歇组（interval_set）或爬坡段（climbs）：完成质量如何（功率达成度、衰减情况）？",

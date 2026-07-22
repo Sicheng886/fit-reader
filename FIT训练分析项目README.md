@@ -59,7 +59,8 @@ FIT_AI_STREAM=false                            # 可选，默认 false；部分�
 FIT_AI_STALL_MS=120000                         # 可选，仅在 FIT_AI_STREAM=true 时生效：流空闲超时，默认 60s
 ```
 
-- AI 报告会自动写入 `ai_reports` 表并按 mode 保留最近 10 条；Web 界面「AI 分析」页可查看历史报告并加载
+- AI 报告会自动写入 `ai_reports` 表并按 mode 保留最近 30 条；Web 界面「AI 分析」页可查看历史报告并加载，也可在报告下方继续追问（不缓存）。
+- 训练详情页支持把记录标记为 训练 / 比赛 / 恢复 / 休闲；AI 复盘会基于分类解读。
 - 输出用 `marked` 在服务端转成 HTML，前端直接渲染，支持表格、代码块等 Markdown 元素
 - 模型名以你的账号可用列表为准（可用 `GET $FIT_AI_BASE_URL/models` 带密钥查询）
 

@@ -447,6 +447,40 @@ select:focus, input:focus { border-color: var(--volt); }
 .sport-badge.running { background: rgba(63, 214, 245, 0.14); color: var(--cyan); }
 .sport-badge.swimming { background: rgba(90, 162, 255, 0.16); color: var(--blue); }
 
+/* ---------------- 训练分类 ---------------- */
+
+.category-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.category-bar label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+.cat-badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: 3px;
+  transform: skewX(-8deg);
+  background: rgba(215, 255, 63, 0.14);
+  color: var(--volt);
+  vertical-align: middle;
+  margin-right: 8px;
+}
+.cat-badge.cat-race { background: rgba(255, 93, 115, 0.14); color: var(--red); }
+.cat-badge.cat-recovery { background: rgba(61, 220, 151, 0.14); color: var(--green); }
+.cat-badge.cat-leisure { background: rgba(141, 154, 168, 0.14); color: var(--muted); }
+
 /* ---------------- 分区分布条 ---------------- */
 
 .zone-bars { display: flex; flex-direction: column; gap: 6px; }
@@ -694,6 +728,64 @@ svg.chart .axis-zero { stroke: var(--line); stroke-dasharray: 4 4; }
 .ftp-list li { margin-bottom: 4px; }
 .ftp-refs { font-size: 11px; margin-top: 4px; }
 .ftp-applied { color: #3ddc97; font-size: 13px; }
+
+/* ---------------- AI 追问 ---------------- */
+
+.ai-follow-up {
+  margin-top: 24px;
+  border-top: 1px solid var(--line-soft);
+  padding-top: 20px;
+}
+.follow-up-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--faint);
+  margin-bottom: 14px;
+}
+.ai-chat {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-bottom: 16px;
+}
+.chat-bubble {
+  max-width: 92%;
+  padding: 12px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--line-soft);
+  font-size: 13px;
+}
+.chat-bubble.user {
+  align-self: flex-end;
+  background: var(--panel-2);
+  border-color: var(--line);
+}
+.chat-bubble.user p { margin: 0; color: var(--text); }
+.chat-bubble.assistant {
+  align-self: flex-start;
+  background: var(--bg-soft);
+}
+.follow-up-input {
+  display: flex;
+  gap: 10px;
+  align-items: stretch;
+}
+.follow-up-input textarea {
+  flex: 1;
+  resize: vertical;
+  min-height: 44px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  padding: 10px 12px;
+  border-radius: 4px;
+  outline: none;
+}
+.follow-up-input textarea:focus { border-color: var(--volt); }
 
 @media (max-width: 860px) {
   /* 顶栏：手机端改为两行（logo / nav） */

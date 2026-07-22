@@ -60,7 +60,17 @@ function openDb() {
       value TEXT NOT NULL
     );
   `);
+  ensureActivityCategoryColumn(_db);
   return _db;
+}
+
+/** 为已存在的数据库迁移增加 activities.category 列（默认 training） */
+function ensureActivityCategoryColumn(db) {
+  const cols = db.prepare(`PRAGMA table_info(activities)`).all();
+  if (!cols.some((c) => c.name === "category")) {
+    db.exec(`ALTER TABLE activities ADD COLUMN category TEXT DEFAULT 'training'`);
+    db.exec(`UPDATE activities SET category = 'training' WHERE category IS NULL`);
+  }
 }
 
 /** 关闭数据库句柄（测试清理临时库文件前调用；生产路径无需调用） */
@@ -138,7 +148,46 @@ export function setAthlete(partial) {
   return { ...ATHLETE };
 }
 
-/** 保存 AI 分析报告；每个 mode 仅保留最近 10 条 */
+const VALID_CATEGORIES = new Set(["training", "race", "recovery", "leisure"]);
+const CATEGORY_LABEL = {
+  training: "训练",
+  race: "比赛",
+  recovery: "恢复",
+  leisure: "休闲",
+};
+
+/** 校验训练分类是否合法 */
+export function isValidCategory(category) {
+  return VALID_CATEGORIES.has(category);
+}
+
+/** 返回分类的中文名，未知时返回原值 */
+export function categoryLabel(category) {
+  return CATEGORY_LABEL[category] ?? category ?? "训练";
+}
+
+/**
+ * 更新训练分类（训练/比赛/恢复/休闲）。
+ * 非法值或训练不存在时抛 Error（Web API 直接透传给前端）。
+ */
+export function setActivityCategory(fileName, category) {
+  if (!isValidCategory(category)) throw new Error("分类需为 training/race/recovery/leisure");
+  const db = openDb();
+  const info = db
+    .prepare(`UPDATE activities SET category = ? WHERE file_name = ?`)
+    .run(category, fileName);
+  if (info.changes === 0) throw new Error("训练不存在");
+  return { ok: true };
+}
+
+/** 获取训练分类，未设置时默认训练 */
+export function getActivityCategory(fileName) {
+  const db = openDb();
+  const row = db.prepare(`SELECT category FROM activities WHERE file_name = ?`).get(fileName);
+  return row?.category ?? "training";
+}
+
+/** 保存 AI 分析报告；每个 mode 仅保留最近 30 条 */
 export function saveAiReport(mode, context, prompt, markdown) {
   const db = openDb();
   const info = db
@@ -154,18 +203,18 @@ export function saveAiReport(mode, context, prompt, markdown) {
       prompt ?? "",
       markdown ?? "",
     );
-  // 每个 mode 仅保留最近 10 条（用 id DESC，自增主键严格反映插入顺序，不受 created_at 秒级精度影响）
+  // 每个 mode 仅保留最近 30 条（用 id DESC，自增主键严格反映插入顺序，不受 created_at 秒级精度影响）
   db.prepare(
     `DELETE FROM ai_reports
      WHERE id NOT IN (
-       SELECT id FROM ai_reports WHERE mode = ? ORDER BY id DESC LIMIT 10
+       SELECT id FROM ai_reports WHERE mode = ? ORDER BY id DESC LIMIT 30
      ) AND mode = ?`,
   ).run(mode, mode);
   return Number(info.lastInsertRowid);
 }
 
-/** 列出某 mode 的最近 N 条报告（默认 10） */
-export function listAiReports(mode, n = 10) {
+/** 列出某 mode 的最近 N 条报告（默认 30） */
+export function listAiReports(mode, n = 30) {
   const db = openDb();
   const rows = db
     .prepare(
@@ -310,7 +359,7 @@ export function listActivities(n = 200) {
   const db = openDb();
   const rows = db
     .prepare(
-      `SELECT file_name, date, sport, duration_sec, distance_km, elevation_gain_m,
+      `SELECT file_name, date, sport, category, duration_sec, distance_km, elevation_gain_m,
               tss, np, avg_power, intensity_factor
        FROM activities ORDER BY date DESC LIMIT ?`,
     )
@@ -320,6 +369,7 @@ export function listActivities(n = 200) {
     file_name: r.file_name,
     date: r.date,
     sport: r.sport,
+    category: r.category ?? "training",
     duration_sec: r.duration_sec,
     distance_km: r1(r.distance_km),
     elevation_gain_m: r.elevation_gain_m == null ? null : Math.round(r.elevation_gain_m),
@@ -334,11 +384,15 @@ export function listActivities(n = 200) {
 export function getActivitySummary(fileName) {
   const db = openDb();
   const row = db
-    .prepare(`SELECT summary_json FROM activities WHERE file_name = ?`)
+    .prepare(`SELECT summary_json, category FROM activities WHERE file_name = ?`)
     .get(fileName);
   if (!row) return null;
   try {
-    return JSON.parse(row.summary_json);
+    const summary = JSON.parse(row.summary_json);
+    if (summary?.activity && row.category) {
+      summary.activity.category = row.category;
+    }
+    return summary;
   } catch {
     return null;
   }

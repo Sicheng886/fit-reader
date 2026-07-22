@@ -21,7 +21,7 @@ delete process.env.FIT_AI_API_KEY; // 确保走"未配置→返回提示词"分�
 
 const { buildRideFit } = await import("./make_test_fit.mjs");
 const { createServer } = await import("../server.js");
-const { closeDb, saveAiReport, listAiReports, getAiReport, upsertActivity, getAthleteState } = await import("../db.js");
+const { closeDb, saveAiReport, listAiReports, getAiReport, upsertActivity, getAthleteState, setActivityCategory, getActivitySummary } = await import("../db.js");
 
 let server, base;
 
@@ -83,6 +83,29 @@ test("详情接口返回完整 summary", async () => {
   assert.ok(data.summary.power.zone_distribution_pct);
 });
 
+test("训练分类可标记并在 summary 中合并", async () => {
+  const r1 = await getJson(`/api/activity?name=${encodeURIComponent("web_test_ride.fit")}`);
+  assert.equal(r1.data.summary.activity.category, "training");
+
+  const post = await fetch(`${base}/api/activity/category`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: "web_test_ride.fit", category: "race" }),
+  });
+  assert.equal(post.status, 200);
+
+  const r2 = await getJson(`/api/activity?name=${encodeURIComponent("web_test_ride.fit")}`);
+  assert.equal(r2.data.summary.activity.category, "race");
+
+  // 非法分类返回 400
+  const bad = await fetch(`${base}/api/activity/category`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: "web_test_ride.fit", category: "invalid" }),
+  });
+  assert.equal(bad.status, 400);
+});
+
 test("时序接口返回抽稀后的记录", async () => {
   const { status, data } = await getJson(`/api/records?name=${encodeURIComponent("web_test_ride.fit")}`);
   assert.equal(status, 200);
@@ -140,15 +163,15 @@ test("上传非 .fit 文件名被拒绝", async () => {
   assert.equal(resp.status, 400);
 });
 
-test("AI 报告缓存：每个 mode 仅保留最近 10 条", () => {
-  for (let i = 1; i <= 12; i++) {
+test("AI 报告缓存：每个 mode 仅保留最近 30 条", () => {
+  for (let i = 1; i <= 35; i++) {
     saveAiReport("review", { file_name: `ride_${i}.fit` }, "prompt", `report ${i}`);
   }
   const rows = listAiReports("review");
-  assert.equal(rows.length, 10);
-  assert.equal(rows[0].file_name, "ride_12.fit"); // 最新的在前
+  assert.equal(rows.length, 30);
+  assert.equal(rows[0].file_name, "ride_35.fit"); // 最新的在前
   const latest = getAiReport(rows[0].id);
-  assert.equal(latest.markdown, "report 12");
+  assert.equal(latest.markdown, "report 35");
   assert.match(latest.prompt, /prompt/);
 });
 
