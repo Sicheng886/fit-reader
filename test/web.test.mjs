@@ -21,7 +21,7 @@ delete process.env.FIT_AI_API_KEY; // 确保走"未配置→返回提示词"分�
 
 const { buildRideFit } = await import("./make_test_fit.mjs");
 const { createServer } = await import("../server.js");
-const { closeDb, saveAiReport, listAiReports, getAiReport, upsertActivity, getAthleteState, setActivityCategory, getActivitySummary } = await import("../db.js");
+const { closeDb, saveAiReport, listAiReports, getAiReport, upsertActivity, getAthleteState, setActivityCategory, getActivitySummary } = await import("../src/db.js");
 
 let server, base;
 

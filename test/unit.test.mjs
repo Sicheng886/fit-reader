@@ -18,8 +18,8 @@ import {
   hrDriftPct,
   collectDeveloperFields,
 } from "../index.js";
-import { estimateFtpFromHistory } from "../ftp.js";
-import { ATHLETE } from "../settings.js";
+import { estimateFtpFromHistory } from "../src/ftp.js";
+import { ATHLETE } from "../src/settings.js";
 
 // 构造逐秒记录对象的辅助函数
 const rec = (i, fields = {}) => ({

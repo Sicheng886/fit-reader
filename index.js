@@ -23,14 +23,14 @@ import {
   recentActivities,
   recentFormDaily,
   syncAthleteFromDb,
-} from "./db.js";
+} from "./src/db.js";
 import {
   buildReviewPrompt,
   buildPlanPrompt,
   buildTaperPrompt,
   buildComparePrompt,
   thinToWeekly,
-} from "./prompts.js";
+} from "./src/prompts.js";
 import {
   ATHLETE,
   POWER_ZONES,
@@ -39,7 +39,7 @@ import {
   CLIMB_DETECTION,
   CADENCE_ANALYSIS,
   DATA_QUALITY,
-} from "./settings.js";
+} from "./src/settings.js";
 
 // ---------------- 工具函数 ----------------
 

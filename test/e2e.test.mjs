@@ -16,7 +16,7 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "fit-reader-test-"));
 process.env.FIT_DB_PATH = path.join(tmp, "test-fitness.db");
 
 const { analyzeFile } = await import("../index.js");
-const { ATHLETE } = await import("../settings.js");
+const { ATHLETE } = await import("../src/settings.js");
 const gen = await import("./make_test_fit.mjs");
 
 const inDir = path.join(tmp, "in");

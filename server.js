@@ -42,17 +42,17 @@ import {
   setAthlete,
   setActivityCategory,
   isValidCategory,
-} from "./db.js";
+} from "./src/db.js";
 import {
   buildReviewPrompt,
   buildPlanPrompt,
   buildTaperPrompt,
   buildComparePrompt,
   thinToWeekly,
-} from "./prompts.js";
-import { callAI, isAiConfigured, aiConfigInfo } from "./ai.js";
-import { ATHLETE, FTP_ESTIMATION } from "./settings.js";
-import { estimateFtpFromHistory } from "./ftp.js";
+} from "./src/prompts.js";
+import { callAI, isAiConfigured, aiConfigInfo } from "./src/ai.js";
+import { ATHLETE, FTP_ESTIMATION } from "./src/settings.js";
+import { estimateFtpFromHistory } from "./src/ftp.js";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const WEB_DIR = path.join(ROOT, "web");

@@ -76,7 +76,7 @@ FIT_AI_STALL_MS=120000                         # 可选，仅在 FIT_AI_STREAM=t
 
 **骑手参数（FTP / 最大心率 / 体重）在 Web 界面「设置」页维护**，保存在训练库（SQLite `settings` 表）中，分析新文件时自动生效；首次打开 Web 界面且未配置过时会自动引导到设置页。指标准确性以这套参数为前提，建议每 4-8 周实测更新 FTP（仪表盘「科学估算 FTP」高置信时可一键采纳写库）。
 
-`settings.js` 里仍保留两份内容：
+`src/settings.js` 里仍保留两份内容：
 
 - `ATHLETE`：骑手参数**出厂默认值**——训练库中没有配置时兜底使用（全新部署、纯 CLI 首次分析）；
 - 功率/心率分区、间歇识别/爬坡提取/踏频分析的**算法阈值**，仍在这个文件里集中调整。
@@ -146,7 +146,7 @@ export const ATHLETE = {
 - 踏频-功率联合分析：仅统计功率 ≥ 75% FTP 的发力时段，低踏频 < 80rpm / 高踏频 > 90rpm
 - CTL = TSS 的 42 天指数加权（慢性负荷/体能）；ATL = TSS 的 7 天指数加权（急性负荷/疲劳）；TSB = CTL − ATL（状态）；缺天按 TSS=0 参与衰减
 - 月度强度分布：低(Z1–Z2)/中(Z3–Z4)/高(Z5–Z7) 时间占比按时长加权；分类规则：低≥75% 且 高>中 → polarized，低>中>高 → pyramidal，其余 → sweet_spot
-- FTP 历史估算（`ftp.js`，Web 仪表盘「科学估算 FTP」）：取最近 6 周（可配）全部骑行的 5min/20min 峰功率，双方法互校——① Morton 双参数临界功率模型 P(t)=CP+W′/t 解出 CP≈FTP；② Coggan 20min 峰功率×0.95；心率交叉验证（锚点骑行心率峰值未达 90% HRmax 判定非全力、功率/心率区间系统性偏移提示 FTP 配置漂移、心率漂移中位数 >5% 提示疲劳/脱水数据漂移）；数据不足时输出需要收集的数据清单（如"充分休息后的 20 分钟全力测试，佩戴心率带"）；高置信时可一键采纳写入训练库并进程内即时生效
+- FTP 历史估算（`src/ftp.js`，Web 仪表盘「科学估算 FTP」）：取最近 6 周（可配）全部骑行的 5min/20min 峰功率，双方法互校——① Morton 双参数临界功率模型 P(t)=CP+W′/t 解出 CP≈FTP；② Coggan 20min 峰功率×0.95；心率交叉验证（锚点骑行心率峰值未达 90% HRmax 判定非全力、功率/心率区间系统性偏移提示 FTP 配置漂移、心率漂移中位数 >5% 提示疲劳/脱水数据漂移）；数据不足时输出需要收集的数据清单（如"充分休息后的 20 分钟全力测试，佩戴心率带"）；高置信时可一键采纳写入训练库并进程内即时生效
 
 ## 后续路线图
 
@@ -171,7 +171,7 @@ export const ATHLETE = {
 
 ### P2 — AI 分析工作流
 
-- [x] **提示词模板库**（`prompts.js`）：固化几种提问方式
+- [x] **提示词模板库**（`src/prompts.js`）：固化几种提问方式
   - 单次复盘（`--review`）：分析强度分布，判断训练类型，评估心率漂移
   - 周期规划（`--plan`）：基于最近 8 周 CTL 趋势，下周应安排什么强度
   - 赛前调整（`--taper`）：距离比赛 N 天，TSB 应调整到多少，怎么减量
@@ -189,7 +189,7 @@ export const ATHLETE = {
 
 ### P4 — 可选扩展
 
-- [x] **对接 AI API**：`ai.js` 直接调 OpenAI 兼容接口（`FIT_AI_API_KEY`/`FIT_AI_BASE_URL`/`FIT_AI_MODEL`，默认 Kimi），输出 Markdown 复盘报告；未配置密钥时退化为复制提示词模式
+- [x] **对接 AI API**：`src/ai.js` 直接调 OpenAI 兼容接口（`FIT_AI_API_KEY`/`FIT_AI_BASE_URL`/`FIT_AI_MODEL`，默认 Kimi），输出 Markdown 复盘报告；未配置密钥时退化为复制提示词模式
 - [x] **Web 界面**：`npm run web`（`server.js` 零依赖 HTTP 服务 + `web/` 纯前端 SPA）——训练库仪表盘、训练详情图表、上传 FIT 分析、AI 分析结果展示
 - [ ] **对接 TrainingPeaks / intervals.icu**：对比其官方指标，校验自己的算法
 
@@ -219,14 +219,14 @@ docker compose up -d
 | 文件                   | 说明                                                        |
 | ---------------------- | ----------------------------------------------------------- |
 | `index.js`             | 主脚本：解析 + 指标计算 + 输出（单文件/批量/`--monthly`/`--trend`） |
-| `settings.js`          | 算法配置：分区定义、各分析算法阈值（含 `FTP_ESTIMATION`）+ 骑手参数出厂默认值（训练库未配置时兜底） |
-| `ftp.js`               | FTP 历史估算：CP 模型 + Coggan 20min×0.95 双法互校 + 心率交叉验证/数据充分性诊断（纯函数） |
-| `db.js`                | 训练库：SQLite 入库/去重、CTL/ATL/TSB 计算、月汇总与趋势数据；**AI 报告缓存（`ai_reports` 表，每 mode 最近 10 条）** |
-| `prompts.js`           | AI 提示词模板库：复盘/规划/赛前/对比四种场景的提示词组装    |
-| `ai.js`                | AI API 客户端（P4）：OpenAI 兼容 chat/completions，默认 Kimi；支持流式/非流式、心跳日志、超时参数 |
-| `server.js`            | Web 服务（P4）：零依赖 HTTP 服务 + REST API（含 `POST /api/ai` 保存并返回 HTML、`GET /api/ai/reports`、`GET /api/ai/report`） |
-| `web/`                 | Web 前端（P4）：纯 HTML/CSS/JS SPA，手写 SVG 图表，暗色运动风；AI 输出用服务端 `marked` HTML 渲染，支持历史报告列表 |
+| `src/settings.js`        | 算法配置：分区定义、各分析算法阈值（含 `FTP_ESTIMATION`）+ 骑手参数出厂默认值（训练库未配置时兜底） |
+| `src/ftp.js`             | FTP 历史估算：CP 模型 + Coggan 20min×0.95 双法互校 + 心率交叉验证/数据充分性诊断（纯函数） |
+| `src/db.js`              | 训练库：SQLite 入库/去重、CTL/ATL/TSB 计算、月汇总与趋势数据；AI 报告缓存（`ai_reports` 表，每 mode 最近 30 条） |
+| `src/prompts.js`         | AI 提示词模板库：复盘/规划/赛前/对比四种场景的提示词组装    |
+| `src/ai.js`              | AI API 客户端（P4）：OpenAI 兼容 chat/completions，默认 Kimi；支持流式/非流式、心跳日志、超时参数 |
+| `server.js`              | Web 服务（P4）：零依赖 HTTP 服务 + REST API（含 `POST /api/ai` 保存并返回 HTML、`GET /api/ai/reports`、`GET /api/ai/report`） |
+| `web/`                   | Web 前端（P4）：纯 HTML/CSS/JS SPA，手写 SVG 图表，暗色运动风；AI 输出用服务端 `marked` HTML 渲染，支持历史报告列表 |
 | `test/make_test_fit.mjs` | 测试工具：手写 FIT 二进制生成器（骑行/跑步/游泳/损坏场景） |
-| `test/unit.test.mjs`   | 指标算法纯函数单元测试（node:test）                          |
-| `test/e2e.test.mjs`    | 端到端回归：合成 FIT → analyzeFile → 校验 CSV + summary      |
-| `test/web.test.mjs`    | Web 服务端到端：上传/概览/详情/时序/AI 提示词/路径安全/AI 缓存 10 条限制 |
+| `test/unit.test.mjs`     | 指标算法纯函数单元测试（node:test）                          |
+| `test/e2e.test.mjs`      | 端到端回归：合成 FIT → analyzeFile → 校验 CSV + summary      |
+| `test/web.test.mjs`      | Web 服务端到端：上传/概览/详情/时序/AI 提示词/路径安全/AI 缓存 30 条限制 |
