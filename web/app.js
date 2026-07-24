@@ -130,6 +130,28 @@ function drawLineChart(container, series, { height = 280 } = {}) {
   const step = visible[0].step ?? 1;
   const x = (i) => PL + (n === 1 ? iw / 2 : (i / (n - 1)) * iw);
 
+  // 短缺口桥接：码表自动暂停（红绿灯等）造成的秒级缺口在图上用线性插值连起来，
+  // 仅影响显示、不改原始数据；超过阈值的长时间停顿（休息/吃饭）仍断开
+  const BRIDGE_GAP_SEC = 180;
+  const bridge = (pts) => {
+    const maxRun = Math.max(1, Math.round(BRIDGE_GAP_SEC / step));
+    const out = pts.slice();
+    let i = 0;
+    while (i < out.length) {
+      if (out[i] != null) { i++; continue; }
+      let j = i;
+      while (j < out.length && out[j] == null) j++;
+      const prev = i > 0 ? out[i - 1] : null;
+      const next = j < out.length ? out[j] : null;
+      if (prev != null && next != null && j - i <= maxRun) {
+        for (let k = i; k < j; k++)
+          out[k] = prev + ((next - prev) * (k - i + 1)) / (j - i + 1);
+      }
+      i = j;
+    }
+    return out;
+  };
+
   // 简单的中心移动平均平滑，窗口半径根据数据长度自动调整，null 保留不跨 gap 填补
   const smooth = (pts) => {
     const radius = Math.max(1, Math.round(n / 400));
@@ -155,7 +177,7 @@ function drawLineChart(container, series, { height = 280 } = {}) {
   }
 
   for (const s of visible) {
-    const pts = smooth(s.points);
+    const pts = smooth(bridge(s.points));
     const vals = pts.filter((v) => v != null);
     let min = Math.min(...vals), max = Math.max(...vals);
     if (min === max) { min -= 1; max += 1; }
