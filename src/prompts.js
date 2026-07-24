@@ -58,6 +58,72 @@ function assemble(dataSections, questions) {
   ].join("\n\n");
 }
 
+// ---------------- 提交前数据压缩 ----------------
+// summary.json 本身是聚合指标，体积基本与时长无关；但 anomalies（每段缺失一行）
+// 与 segments（自动圈）两个列表会随时长线性增长。发送给 AI 前先把它们压缩成
+// 聚合统计/首尾取样，保证提示词长度与训练时长无关（纯函数，不改原对象）。
+
+/** 原始 anomalies 条数超过该值时聚合为 anomalies_summary */
+const ANOMALY_RAW_MAX = 5;
+/** segments 超过该值时保留前 KEEP_HEAD + 后 KEEP_TAIL，中间用占位标记省略 */
+const SEGMENTS_MAX = 20;
+const SEGMENTS_KEEP_HEAD = 10;
+const SEGMENTS_KEEP_TAIL = 5;
+/** climbs 超过该值时只保留爬升最大的若干段 */
+const CLIMBS_MAX = 10;
+
+/** 把 "功率缺失 78s，起始 ISO" / "心率跳变 130→160，位于 ISO" 这类逐条标注按类型聚合 */
+function aggregateAnomalies(anomalies) {
+  const groups = new Map();
+  for (const a of anomalies) {
+    const text = String(a);
+    const label = text.split(" ")[0] || "其他";
+    const dur = /(\d+)s[，,]/.exec(text)?.[1];
+    const at = /(?:起始|位于)\s+(.+)$/.exec(text)?.[1];
+    let g = groups.get(label);
+    if (!g) {
+      g = { type: label, count: 0, first_at: at };
+      groups.set(label, g);
+    }
+    g.count++;
+    if (dur != null) {
+      const d = Number(dur);
+      g.total_sec = (g.total_sec ?? 0) + d;
+      g.max_sec = Math.max(g.max_sec ?? 0, d);
+    }
+  }
+  return [...groups.values()];
+}
+
+/**
+ * 压缩 summary 中随时长增长的列表，返回新对象（原对象不变）：
+ * - anomalies 超过 ANOMALY_RAW_MAX 条 → 替换为 anomalies_summary 聚合统计；
+ * - segments 超过 SEGMENTS_MAX 段 → 保留首尾，中间省略（首尾对比仍可看出衰减）；
+ * - climbs 超过 CLIMBS_MAX 段 → 只保留爬升最大的段。
+ */
+export function compactSummaryForPrompt(summary) {
+  if (!summary || typeof summary !== "object") return summary;
+  const out = { ...summary };
+  if (Array.isArray(out.anomalies) && out.anomalies.length > ANOMALY_RAW_MAX) {
+    out.anomalies_summary = aggregateAnomalies(out.anomalies);
+    delete out.anomalies;
+  }
+  if (Array.isArray(out.segments) && out.segments.length > SEGMENTS_MAX) {
+    const omitted = out.segments.length - SEGMENTS_KEEP_HEAD - SEGMENTS_KEEP_TAIL;
+    out.segments = [
+      ...out.segments.slice(0, SEGMENTS_KEEP_HEAD),
+      { name: `...（中间省略 ${omitted} 段）` },
+      ...out.segments.slice(-SEGMENTS_KEEP_TAIL),
+    ];
+  }
+  if (Array.isArray(out.climbs) && out.climbs.length > CLIMBS_MAX) {
+    out.climbs = [...out.climbs]
+      .sort((a, b) => (b.elevation_gain_m ?? 0) - (a.elevation_gain_m ?? 0))
+      .slice(0, CLIMBS_MAX);
+  }
+  return out;
+}
+
 // ---------------- 场景模板 ----------------
 
 const CATEGORY_NAMES = {
@@ -76,7 +142,7 @@ export function buildReviewPrompt(summary) {
   return assemble(
     [
       `## 训练数据（单次骑行汇总）\n\n用户已将本次记录分类为：**${catName}**。请基于该分类进行解读；` +
-        `如果是比赛，请按比赛而非日常训练来评估强度与恢复建议。\n\n${jsonBlock(summary)}`,
+        `如果是比赛，请按比赛而非日常训练来评估强度与恢复建议。\n\n${jsonBlock(compactSummaryForPrompt(summary))}`,
     ],
     [
       "参考用户标记的分类，判断本次记录的训练/比赛属性，并说明依据。",
@@ -145,8 +211,8 @@ export function buildTaperPrompt({
 export function buildComparePrompt(summaryA, summaryB) {
   return assemble(
     [
-      `## 训练 A（${summaryA.activity?.date ?? "未知日期"}）\n\n${jsonBlock(summaryA)}`,
-      `## 训练 B（${summaryB.activity?.date ?? "未知日期"}）\n\n${jsonBlock(summaryB)}`,
+      `## 训练 A（${summaryA.activity?.date ?? "未知日期"}）\n\n${jsonBlock(compactSummaryForPrompt(summaryA))}`,
+      `## 训练 B（${summaryB.activity?.date ?? "未知日期"}）\n\n${jsonBlock(compactSummaryForPrompt(summaryB))}`,
     ],
     [
       "先判断两次训练是否属于同类训练（可比性如何），若类型不同请指出对比的局限。",

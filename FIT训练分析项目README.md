@@ -54,7 +54,7 @@ FIT_AI_API_KEY=sk-...                          # 必填
 FIT_AI_BASE_URL=https://api.moonshot.cn/v1     # 可选，默认 Kimi
 FIT_AI_MODEL=moonshot-v1-32k                   # 可选，复盘提示词较长建议 32k 上下文
 FIT_AI_TEMPERATURE=0.3                         # 可选，缺省不传（部分模型只允许特定取值，如 kimi-k2.x 只允许 1）
-FIT_AI_TIMEOUT_MS=600000                       # 可选，默认 5 分钟（300000ms）；复盘提示词很长，建议 10 分钟起步
+FIT_AI_TIMEOUT_MS=600000                       # 可选，默认 10 分钟（600000ms）；复盘报告生成较慢，旧版 5 分钟容易被掐断
 FIT_AI_STREAM=false                            # 可选，默认 false；部分账号/模型不会真正流式吐字，非流式更稳
 FIT_AI_STALL_MS=120000                         # 可选，仅在 FIT_AI_STREAM=true 时生效：流空闲超时，默认 60s
 ```
@@ -222,11 +222,12 @@ docker compose up -d
 | `src/settings.js`        | 算法配置：分区定义、各分析算法阈值（含 `FTP_ESTIMATION`）+ 骑手参数出厂默认值（训练库未配置时兜底） |
 | `src/ftp.js`             | FTP 历史估算：CP 模型 + Coggan 20min×0.95 双法互校 + 心率交叉验证/数据充分性诊断（纯函数） |
 | `src/db.js`              | 训练库：SQLite 入库/去重、CTL/ATL/TSB 计算、月汇总与趋势数据；AI 报告缓存（`ai_reports` 表，每 mode 最近 30 条） |
-| `src/prompts.js`         | AI 提示词模板库：复盘/规划/赛前/对比四种场景的提示词组装    |
-| `src/ai.js`              | AI API 客户端（P4）：OpenAI 兼容 chat/completions，默认 Kimi；支持流式/非流式、心跳日志、超时参数 |
+| `src/prompts.js`         | AI 提示词模板库：复盘/规划/赛前/对比四种场景的提示词组装；提交前用 `compactSummaryForPrompt` 把随时长增长的 anomalies/segments/climbs 列表压缩为聚合统计，提示词长度与训练时长无关 |
+| `src/ai.js`              | AI API 客户端（P4）：OpenAI 兼容 chat/completions，默认 Kimi；基于 node:http(s) 自行管理超时（避开内置 fetch/undici 的 300s 隐藏超时），支持流式/非流式、心跳日志 |
 | `server.js`              | Web 服务（P4）：零依赖 HTTP 服务 + REST API（含 `POST /api/ai` 保存并返回 HTML、`GET /api/ai/reports`、`GET /api/ai/report`） |
 | `web/`                   | Web 前端（P4）：纯 HTML/CSS/JS SPA，手写 SVG 图表，暗色运动风；AI 输出用服务端 `marked` HTML 渲染，支持历史报告列表 |
 | `test/make_test_fit.mjs` | 测试工具：手写 FIT 二进制生成器（骑行/跑步/游泳/损坏场景） |
-| `test/unit.test.mjs`     | 指标算法纯函数单元测试（node:test）                          |
+| `test/unit.test.mjs`     | 指标算法纯函数单元测试（node:test），含提示词数据压缩         |
+| `test/ai.test.mjs`       | AI 客户端 HTTP 层回归：本地 mock 服务验证慢响应/总超时/流式/错误状态 |
 | `test/e2e.test.mjs`      | 端到端回归：合成 FIT → analyzeFile → 校验 CSV + summary      |
 | `test/web.test.mjs`      | Web 服务端到端：上传/概览/详情/时序/AI 提示词/路径安全/AI 缓存 30 条限制 |

@@ -19,6 +19,7 @@ import {
   collectDeveloperFields,
 } from "../index.js";
 import { estimateFtpFromHistory } from "../src/ftp.js";
+import { compactSummaryForPrompt } from "../src/prompts.js";
 import { ATHLETE } from "../src/settings.js";
 
 // 构造逐秒记录对象的辅助函数
@@ -253,4 +254,56 @@ test("estimateFtpFromHistory: 缺 5min 峰功率时 CP 模型退化，仅用 Cog
   assert.equal(r.estimate.methods.cp_model, null);
   assert.equal(r.estimate.ftp_w, r.estimate.methods.coggan_20min.ftp_w);
   assert.match(r.notes.join("\n"), /CP 模型不可用/);
+});
+
+// ---------------- prompts.js 提交前数据压缩 ----------------
+
+test("compactSummaryForPrompt: 少量 anomalies 时保持原样", () => {
+  const s = { anomalies: ["记录缺失 25s，起始 2026-07-24T13:54:16.000Z"] };
+  const out = compactSummaryForPrompt(s);
+  assert.deepEqual(out.anomalies, s.anomalies);
+  assert.equal(out.anomalies_summary, undefined);
+});
+
+test("compactSummaryForPrompt: 大量 anomalies 聚合为按类型统计", () => {
+  const anomalies = [
+    "功率缺失 78s，起始 2026-07-24T13:43:40.000Z",
+    "功率缺失 65s，起始 2026-07-24T14:36:53.000Z",
+    "记录缺失 25s，起始 2026-07-24T13:54:16.000Z",
+    "记录缺失 15s，起始 2026-07-24T13:55:26.000Z",
+    "记录缺失 41s，起始 2026-07-24T14:01:38.000Z",
+    "心率跳变 95→148，位于 2026-07-24T14:05:00.000Z",
+  ];
+  const out = compactSummaryForPrompt({ anomalies });
+  assert.equal(out.anomalies, undefined);
+  const byType = Object.fromEntries(out.anomalies_summary.map((g) => [g.type, g]));
+  assert.deepEqual(byType["功率缺失"], {
+    type: "功率缺失",
+    count: 2,
+    first_at: "2026-07-24T13:43:40.000Z",
+    total_sec: 143,
+    max_sec: 78,
+  });
+  assert.equal(byType["记录缺失"].count, 3);
+  assert.equal(byType["记录缺失"].total_sec, 81);
+  assert.equal(byType["心率跳变"].count, 1);
+  assert.equal(byType["心率跳变"].total_sec, undefined);
+});
+
+test("compactSummaryForPrompt: 超长 segments 保留首尾并标注省略", () => {
+  const segments = Array.from({ length: 30 }, (_, i) => ({ name: `lap_${i + 1}` }));
+  const out = compactSummaryForPrompt({ segments });
+  assert.equal(out.segments.length, 16); // 前10 + 占位 + 后5
+  assert.equal(out.segments[0].name, "lap_1");
+  assert.equal(out.segments[9].name, "lap_10");
+  assert.match(out.segments[10].name, /省略 15 段/);
+  assert.equal(out.segments[15].name, "lap_30");
+});
+
+test("compactSummaryForPrompt: 不修改原对象", () => {
+  const s = {
+    anomalies: Array.from({ length: 8 }, (_, i) => `记录缺失 ${10 + i}s，起始 T${i}`),
+  };
+  compactSummaryForPrompt(s);
+  assert.equal(s.anomalies.length, 8);
 });
