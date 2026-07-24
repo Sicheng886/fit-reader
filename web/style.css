@@ -667,6 +667,16 @@ svg.chart .axis-zero { stroke: var(--line); stroke-dasharray: 4 4; }
 .callout.info { border-color: var(--cyan); background: rgba(63, 214, 245, 0.07); color: var(--cyan); }
 
 .anomaly-list { list-style: none; }
+.anomaly-details summary {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+  padding: 4px 0;
+}
+.anomaly-details summary:hover { color: var(--volt); }
+.anomaly-details[open] summary { margin-bottom: 4px; }
 .anomaly-list li {
   font-family: var(--mono);
   font-size: 12px;

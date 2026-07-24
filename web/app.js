@@ -852,9 +852,16 @@ function anomaliesHtml(summary) {
     dq.missing_seconds ? `缺失 ${dq.missing_seconds} 秒` : null,
   ].filter(Boolean).join(" · ");
   if (!an?.length && !dqText) return "";
+  // 异常列表可折叠：超过 5 条默认收起（自动暂停产生的缺失标注可能几十条），点击展开
+  const listHtml = an?.length
+    ? `<details class="anomaly-details" ${an.length > 5 ? "" : "open"}>
+        <summary>异常标注 ${an.length} 条</summary>
+        <ul class="anomaly-list">${an.map((x) => `<li>⚠ ${esc(x)}</li>`).join("")}</ul>
+      </details>`
+    : `<p class="muted" style="font-size:13px">未发现异常</p>`;
   return `<div class="panel"><div class="panel-title">数据质量与异常</div>
     ${dqText ? `<p class="muted" style="font-size:12px;margin-bottom:8px">${esc(dqText)}</p>` : ""}
-    ${an?.length ? `<ul class="anomaly-list">${an.map((x) => `<li>⚠ ${esc(x)}</li>`).join("")}</ul>` : `<p class="muted" style="font-size:13px">未发现异常</p>`}
+    ${listHtml}
   </div>`;
 }
 
