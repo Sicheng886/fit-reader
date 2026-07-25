@@ -71,12 +71,7 @@ body {
 .brand-mark {
   width: 22px;
   height: 22px;
-  background: repeating-linear-gradient(
-    -45deg,
-    var(--volt) 0 3px,
-    transparent 3px 6px
-  );
-  transform: skewX(-12deg);
+  display: block;
 }
 
 .tabs { display: flex; gap: 4px; height: 100%; }
