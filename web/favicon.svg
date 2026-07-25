@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <!-- 对角条纹：3px 荧光黄 + 3px 透明，垂直周期 6px（rotate(45) 后与 CSS 负45度渐变条纹同向） -->
+    <pattern id="stripes" width="8.485" height="8.485" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+      <rect width="4.243" height="8.485" fill="#d7ff3f"/>
+    </pattern>
+    <!-- 与 .brand-mark 相同的斜切12度平行四边形 -->
+    <clipPath id="mark">
+      <path d="M10 7h16l-4 18H6z"/>
+    </clipPath>
+  </defs>
+  <!-- 深色圆角底（与站点背景色一致），保证浅色浏览器标签栏下可见 -->
+  <rect width="32" height="32" rx="6" fill="#0a0d11"/>
+  <rect width="32" height="32" fill="url(#stripes)" clip-path="url(#mark)"/>
+</svg>
