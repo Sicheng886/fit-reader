@@ -337,12 +337,16 @@ export function computeForm(date) {
 /**
  * 最近 N 天逐日负荷序列：[{ date, tss, ctl, atl, tsb }]。
  * 与 computeForm 同一递推口径，供周期规划/赛前调整提示词取走势数据。
+ * 序列末端延伸到当前实际日期（无训练日 TSS=0 照常参与 CTL/ATL 衰减），
+ * 这样趋势图与"当前体能指数"反映今天，而不是停在最后一次训练的日期。
  */
 export function recentFormDaily(days = 56) {
   const db = openDb();
   const row = db.prepare(`SELECT MAX(date) AS d FROM activities`).get();
   if (!row?.d) return [];
-  const series = dailyTssSeries(row.d);
+  // 活动日期为 UTC 口径（records 时间戳的 ISO 前 10 位），今天同样取 UTC
+  const today = new Date().toISOString().slice(0, 10);
+  const series = dailyTssSeries(row.d < today ? today : row.d);
   let ctl = 0,
     atl = 0;
   const r1 = (x) => Math.round(x * 10) / 10;
