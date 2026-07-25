@@ -398,24 +398,42 @@ export function getActivitySummary(fileName) {
   }
 }
 
-/** 最近 n 条训练简明清单（供提示词上下文，按日期倒序） */
+/**
+ * 最近 n 条训练简明清单（供提示词上下文，按日期倒序）。
+ * 除基础负荷字段外，从完整 summary 补充心率漂移/峰功率曲线/平均踏频（缺则省略）；
+ * IF 保留 2 位小数——1 位小数会让 AI 用 NP/IF 反推 FTP 时产生 ±5W 级噪音。
+ */
 export function recentActivities(n = 10) {
   const db = openDb();
   const rows = db
     .prepare(
-      `SELECT date, duration_sec, distance_km, tss, np, intensity_factor
+      `SELECT date, duration_sec, distance_km, tss, np, intensity_factor, summary_json
        FROM activities ORDER BY date DESC LIMIT ?`,
     )
     .all(n);
   const r1 = (x) => (x == null ? null : Math.round(x * 10) / 10);
-  return rows.map((r) => ({
-    date: r.date,
-    duration_min: r.duration_sec == null ? null : Math.round(r.duration_sec / 60),
-    distance_km: r1(r.distance_km),
-    tss: r.tss == null ? null : Math.round(r.tss),
-    np: r.np == null ? null : Math.round(r.np),
-    intensity_factor: r.intensity_factor == null ? null : r1(r.intensity_factor),
-  }));
+  const r2 = (x) => (x == null ? null : Math.round(x * 100) / 100);
+  return rows.map((r) => {
+    const out = {
+      date: r.date,
+      duration_min: r.duration_sec == null ? null : Math.round(r.duration_sec / 60),
+      distance_km: r1(r.distance_km),
+      tss: r.tss == null ? null : Math.round(r.tss),
+      np: r.np == null ? null : Math.round(r.np),
+      intensity_factor:
+        r.intensity_factor == null ? null : r2(r.intensity_factor),
+    };
+    try {
+      const s = JSON.parse(r.summary_json);
+      if (s?.heart_rate?.hr_drift_pct != null)
+        out.hr_drift_pct = r1(s.heart_rate.hr_drift_pct);
+      if (s?.power?.peak_curve) out.peak_power_curve = s.power.peak_curve;
+      if (s?.cadence?.avg != null) out.cadence_avg = s.cadence.avg;
+    } catch {
+      // summary_json 损坏时仅返回基础字段
+    }
+    return out;
+  });
 }
 
 /**
