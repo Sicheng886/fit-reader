@@ -253,16 +253,23 @@ function drawTrendChart(container, daily, { height = 300 } = {}) {
   container.innerHTML = `<svg class="chart" viewBox="0 0 ${W} ${H}">${svg}</svg>`;
 }
 
-/** 分区分布横条 */
-function zoneBarsHtml(dist, colors) {
+/**
+ * 分区分布横条：左区名，中间条形（百分比跟在填充右侧；填充接近 100% 时改放填充色上方），
+ * 右侧该区具体范围（ranges: { Z1: "0-72", ... }，由服务端按骑手参数换算）
+ */
+function zoneBarsHtml(dist, colors, ranges) {
   if (!dist) return `<div class="empty">无分区数据</div>`;
   return `<div class="zone-bars">${Object.entries(dist)
     .map(([z, pct]) => {
       const c = colors[z] || "#888";
+      const label =
+        pct >= 85
+          ? `<span class="z-pct z-pct-on" style="width:${pct}%">${num(pct, 1)}%</span>`
+          : `<span class="z-pct z-pct-after" style="left:calc(${pct}% + 6px)">${num(pct, 1)}%</span>`;
       return `<div class="zone-row">
         <span class="z-name">${z}</span>
-        <div class="z-track"><div class="z-fill" style="width:${pct}%;background:${c}"></div></div>
-        <span class="z-pct">${num(pct, 1)}%</span>
+        <div class="z-track"><div class="z-fill" style="width:${pct}%;background:${c}"></div>${label}</div>
+        <span class="z-range">${ranges?.[z] ?? ""}</span>
       </div>`;
     })
     .join("")}</div>`;
@@ -594,7 +601,7 @@ function metricHtml(label, value, unit, sub) {
 
 async function renderActivityDetail(name) {
   app.innerHTML = `<div class="empty loading">加载中…</div>`;
-  const [{ summary }, records] = await Promise.all([
+  const [{ summary, zone_ranges }, records] = await Promise.all([
     api(`/api/activity?name=${encodeURIComponent(name)}`),
     api(`/api/records?name=${encodeURIComponent(name)}`).catch(() => null),
   ]);
@@ -682,8 +689,8 @@ async function renderActivityDetail(name) {
       <div class="chart-wrap" id="tsChart"></div>
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px" class="zone-panels">
-      <div class="panel"><div class="panel-title">功率分区（Coggan 7 区）</div>${zoneBarsHtml(p.zone_distribution_pct, ZONE_COLORS)}</div>
-      <div class="panel"><div class="panel-title">心率分区（5 区）</div>${zoneBarsHtml(hr.zone_distribution_pct, ZONE_COLORS)}</div>
+      <div class="panel"><div class="panel-title">功率分区（Coggan 7 区）</div>${zoneBarsHtml(p.zone_distribution_pct, ZONE_COLORS, zone_ranges?.power)}</div>
+      <div class="panel"><div class="panel-title">心率分区（5 区）</div>${zoneBarsHtml(hr.zone_distribution_pct, ZONE_COLORS, zone_ranges?.hr)}</div>
     </div>
     ${peakCurveHtml(p.peak_curve, ftp)}
     ${segmentsHtml(summary)}

@@ -486,14 +486,30 @@ select:focus, input:focus { border-color: var(--volt); }
 .zone-bars { display: flex; flex-direction: column; gap: 6px; }
 .zone-row {
   display: grid;
-  grid-template-columns: 34px 1fr 52px;
+  grid-template-columns: 34px 1fr 62px;
   align-items: center;
   gap: 12px;
 }
 .zone-row .z-name { font-family: var(--mono); font-size: 12px; color: var(--muted); }
-.zone-row .z-track { height: 14px; background: var(--bg-soft); border-radius: 2px; overflow: hidden; }
+.zone-row .z-track { position: relative; height: 14px; background: var(--bg-soft); border-radius: 2px; overflow: hidden; }
 .zone-row .z-fill { height: 100%; border-radius: 2px; transform: skewX(-12deg); transform-origin: left; }
-.zone-row .z-pct { font-family: var(--mono); font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; }
+/* 百分比：短填充跟在填充右侧空余轨道里，长填充（≥85%）压在填充色上方右对齐 */
+.zone-row .z-pct {
+  position: absolute; top: 0; height: 100%;
+  display: flex; align-items: center;
+  font-family: var(--mono); font-size: 11px; font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+.zone-row .z-pct-after { color: var(--muted); }
+.zone-row .z-pct-on {
+  justify-content: flex-end; padding-right: 5px; box-sizing: border-box;
+  color: #fff; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.65);
+}
+/* 右侧具体范围（W / bpm），由服务端按骑手参数换算 */
+.zone-row .z-range {
+  font-family: var(--mono); font-size: 12px; color: var(--muted);
+  text-align: right; font-variant-numeric: tabular-nums;
+}
 
 /* ---------------- 峰功率曲线 ---------------- */
 

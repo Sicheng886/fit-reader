@@ -51,7 +51,7 @@ import {
   thinToWeekly,
 } from "./src/prompts.js";
 import { callAI, isAiConfigured, aiConfigInfo } from "./src/ai.js";
-import { ATHLETE, FTP_ESTIMATION } from "./src/settings.js";
+import { ATHLETE, FTP_ESTIMATION, POWER_ZONES, HR_ZONES } from "./src/settings.js";
 import { estimateFtpFromHistory } from "./src/ftp.js";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -82,6 +82,16 @@ function safeName(name) {
   if (!name || typeof name !== "string") return null;
   const base = path.basename(name);
   return base === name && !base.includes("..") ? base : null;
+}
+
+/** 分区定义 × 基准值（FTP/最大心率）→ 各区具体范围文本，如 { Z2: "72-98", Z7: "195+" } */
+function zoneRanges(zones, base) {
+  const out = {};
+  for (const z of zones) {
+    const lo = Math.round(z.min * base);
+    out[z.name] = z.max === Infinity ? `${lo}+` : `${lo}-${Math.round(z.max * base)}`;
+  }
+  return out;
 }
 
 function readBody(req, limitBytes = 64 * 1024 * 1024) {
@@ -243,7 +253,14 @@ async function handleApi(req, res, url) {
     const name = safeName(url.searchParams.get("name"));
     const summary = name && getActivitySummary(name);
     if (!summary) return sendJson(res, 404, { error: "训练不存在" });
-    sendJson(res, 200, { file_name: name, summary });
+    // 分区具体范围（W / bpm）：按分析当时的骑手参数（athlete_context）换算，
+    // 与分区分布条的计算口径一致；库中无 athlete_context 时回落当前生效参数
+    const ac = summary.athlete_context ?? {};
+    const zone_ranges = {
+      power: zoneRanges(POWER_ZONES, ac.ftp_watts ?? ATHLETE.ftp_watts),
+      hr: zoneRanges(HR_ZONES, ac.max_hr ?? ATHLETE.max_hr),
+    };
+    sendJson(res, 200, { file_name: name, summary, zone_ranges });
     return;
   }
 

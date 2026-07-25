@@ -81,6 +81,13 @@ test("详情接口返回完整 summary", async () => {
   const { status, data } = await getJson(`/api/activity?name=${encodeURIComponent("web_test_ride.fit")}`);
   assert.equal(status, 200);
   assert.ok(data.summary.power.zone_distribution_pct);
+  // 分区具体范围：按 athlete_context 的骑手参数换算（Z7/Z5 上限为 ∞ 时给 "下限+"）
+  const ftp = data.summary.athlete_context.ftp_watts;
+  const maxHr = data.summary.athlete_context.max_hr;
+  assert.equal(data.zone_ranges.power.Z2, `${Math.round(0.55 * ftp)}-${Math.round(0.75 * ftp)}`);
+  assert.equal(data.zone_ranges.power.Z7, `${Math.round(1.5 * ftp)}+`);
+  assert.equal(data.zone_ranges.hr.Z2, `${Math.round(0.68 * maxHr)}-${Math.round(0.75 * maxHr)}`);
+  assert.equal(data.zone_ranges.hr.Z5, `${Math.round(0.92 * maxHr)}+`);
 });
 
 test("训练分类可标记并在 summary 中合并", async () => {
