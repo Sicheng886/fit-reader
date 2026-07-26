@@ -29,9 +29,24 @@ npm run web
 npm test
 ```
 
-## Docker 部署
+## Docker 部署（快速开始）
 
-项目支持 Docker 镜像部署为 Web 服务，完整步骤与注意事项见 **[DEPLOY.md](./DEPLOY.md)**。
+已发布镜像到 GitHub Packages，可直接拉取运行：
+
+```bash
+docker pull ghcr.io/sicheng886/fit-reader:latest
+docker run -d \
+  --name fit-reader \
+  -p 3000:3000 \
+  -v "$(pwd)/input:/input" \
+  -v "$(pwd)/output:/output" \
+  -v "$(pwd)/db:/app/db" \
+  ghcr.io/sicheng886/fit-reader:latest
+```
+
+启动后访问 http://localhost:3000 即可使用。
+
+完整构建说明（含本地构建、版本号标签、持久化挂载、权限配置）见 **[DEPLOY.md](./DEPLOY.md)**。
 
 ## 技术栈
 
