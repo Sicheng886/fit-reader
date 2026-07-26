@@ -745,6 +745,30 @@ svg.chart .axis-zero { stroke: var(--line); stroke-dasharray: 4 4; }
 .conf-badge.high { background: rgba(61, 220, 151, 0.12); color: #3ddc97; border: 1px solid #3ddc97; }
 .conf-badge.medium { background: rgba(255, 176, 63, 0.12); color: var(--orange); border: 1px solid var(--orange); }
 .conf-badge.low { background: rgba(255, 93, 115, 0.12); color: #ff5d73; border: 1px solid #ff5d73; }
+.status-badge {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 3px;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+}
+.status-badge.pending {
+  background: rgba(255, 176, 63, 0.12);
+  color: var(--orange);
+  border: 1px solid var(--orange);
+}
+.status-badge.failed {
+  background: rgba(255, 93, 115, 0.12);
+  color: var(--red);
+  border: 1px solid var(--red);
+}
+.status-badge.completed {
+  background: rgba(61, 220, 151, 0.1);
+  color: var(--green);
+  border: 1px solid var(--green);
+}
 .ftp-list { margin: 8px 0 0; padding-left: 18px; }
 .ftp-list li { margin-bottom: 4px; }
 .ftp-refs { font-size: 11px; margin-top: 4px; }

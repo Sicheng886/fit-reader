@@ -31,6 +31,8 @@ import {
   listActivities,
   getActivitySummary,
   saveAiReport,
+  createPendingAiReport,
+  updateAiReport,
   listAiReports,
   getAiReport,
   monthlySummary,
@@ -343,10 +345,17 @@ async function handleApi(req, res, url) {
       // 未配置密钥：退回 P2 模式，把提示词给前端供手动复制
       return sendJson(res, 200, { configured: false, prompt });
     }
-    // 已配置：立即返回 202，由服务端在后台完成 AI 调用并保存；
-    // 用户可关闭页面，稍后从历史报告查看。
+    // 已配置：先写入 pending 占位记录，再返回 202 给前端；
+    // 后台完成 AI 调用后更新为 completed，失败则更新为 failed 并记录原因。
+    let reportId;
+    try {
+      reportId = createPendingAiReport(body.mode, body, prompt);
+    } catch (e) {
+      return sendJson(res, 500, { error: `创建报告记录失败: ${e.message}` });
+    }
     sendJson(res, 202, {
       accepted: true,
+      report_id: reportId,
       message: "AI 分析已提交，将在后台生成并保存，请稍后从历史报告查看。",
     });
     (async () => {
@@ -366,11 +375,12 @@ async function handleApi(req, res, url) {
             console.log(`[AI] 仍在生成中...（${heartbeats * 30}s）`);
           },
         });
-        const reportId = saveAiReport(body.mode, body, prompt, markdown);
+        updateAiReport(reportId, { markdown, status: "completed", error: null });
         console.log(
           `[AI] 完成：report_id=${reportId}，${chunkCount} 个 chunk，${charCount} 字符，心跳 ${heartbeats} 次`,
         );
       } catch (e) {
+        updateAiReport(reportId, { status: "failed", error: e.message });
         console.error(`[AI] 后台分析失败: ${e.message}`);
       }
     })();
@@ -475,6 +485,20 @@ async function handleApi(req, res, url) {
       return sendJson(res, 400, { error: "id 参数无效" });
     const row = getAiReport(id);
     if (!row) return sendJson(res, 404, { error: "报告不存在" });
+    if (row.status === "pending") {
+      return sendJson(res, 202, {
+        ...row,
+        html: null,
+        message: "报告正在生成中，请稍后再刷新查看。",
+      });
+    }
+    if (row.status === "failed") {
+      return sendJson(res, 502, {
+        ...row,
+        html: null,
+        error: row.error || "AI 分析失败",
+      });
+    }
     const html = marked.parse(row.markdown, {
       gfm: true,
       headerIds: false,

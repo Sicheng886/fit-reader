@@ -21,7 +21,7 @@ process.env.FIT_INPUT_DIR = path.join(tmp, "input");
 
 const { buildRideFit } = await import("./make_test_fit.mjs");
 const { createServer } = await import("../server.js");
-const { closeDb, saveAiReport, listAiReports, getAiReport, upsertActivity, getAthleteState, setActivityCategory, getActivitySummary, getAiConfig, migrateAiEnvToDb } = await import("../src/db.js");
+const { closeDb, saveAiReport, createPendingAiReport, updateAiReport, listAiReports, getAiReport, upsertActivity, getAthleteState, setActivityCategory, getActivitySummary, getAiConfig, migrateAiEnvToDb } = await import("../src/db.js");
 const { AI_CONFIG } = await import("../src/settings.js");
 
 let server, base;
@@ -179,8 +179,45 @@ test("AI 报告缓存：每个 mode 仅保留最近 30 条", () => {
   assert.equal(rows.length, 30);
   assert.equal(rows[0].file_name, "ride_35.fit"); // 最新的在前
   const latest = getAiReport(rows[0].id);
+  assert.equal(latest.status, "completed");
   assert.equal(latest.markdown, "report 35");
   assert.match(latest.prompt, /prompt/);
+});
+
+test("AI 报告状态：pending 创建、update 回填、接口按状态返回", async () => {
+  const pendingId = createPendingAiReport("taper", { race_date: "2099-01-01" }, "taper prompt");
+  const completedId = createPendingAiReport("review", { file_name: "status_ride.fit" }, "review prompt");
+  updateAiReport(completedId, { markdown: "report body", status: "completed", error: null });
+  const failedId = createPendingAiReport("plan", {}, "plan prompt");
+  updateAiReport(failedId, { status: "failed", error: "AI 请求超时" });
+
+  // listAiReports 应返回 status / error
+  const reviewRows = listAiReports("review");
+  const completed = reviewRows.find((r) => r.id === completedId);
+  assert.ok(completed);
+  assert.equal(completed.status, "completed");
+  assert.equal(completed.error, null);
+
+  const planRows = listAiReports("plan");
+  const failed = planRows.find((r) => r.id === failedId);
+  assert.ok(failed);
+  assert.equal(failed.status, "failed");
+  assert.equal(failed.error, "AI 请求超时");
+
+  // GET /api/ai/report 按状态返回不同 HTTP 码
+  const rPending = await getJson(`/api/ai/report?id=${pendingId}`);
+  assert.equal(rPending.status, 202);
+  assert.equal(rPending.data.status, "pending");
+
+  const rCompleted = await getJson(`/api/ai/report?id=${completedId}`);
+  assert.equal(rCompleted.status, 200);
+  assert.equal(rCompleted.data.status, "completed");
+  assert.ok(rCompleted.data.html);
+
+  const rFailed = await getJson(`/api/ai/report?id=${failedId}`);
+  assert.equal(rFailed.status, 502);
+  assert.equal(rFailed.data.status, "failed");
+  assert.equal(rFailed.data.error, "AI 请求超时");
 });
 
 test("FTP 估算接口：基于训练库骑行返回双方法估值", async () => {

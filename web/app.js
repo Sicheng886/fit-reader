@@ -305,14 +305,27 @@ async function loadReportList(container, mode = "all") {
     return;
   }
   container.innerHTML = `<div class="table-wrap"><table class="data-table">
-    <tr><th>时间</th><th>类别</th><th>关联训练</th><th>操作</th></tr>
+    <tr><th>时间</th><th>类别</th><th>关联训练</th><th>状态</th><th>操作</th></tr>
     ${rows.map((r) => {
       const extra = r.race_date ? `比赛 ${r.race_date}` : r.compare_with ? `对比 ${esc(r.compare_with)}` : "";
+      const statusBadge =
+        r.status === "pending"
+          ? `<span class="status-badge pending">生成中…</span>`
+          : r.status === "failed"
+            ? `<span class="status-badge failed" title="${esc(r.error || "未知错误")}">失败</span>`
+            : `<span class="status-badge completed">完成</span>`;
+      const action =
+        r.status === "pending"
+          ? `<span class="muted">—</span>`
+          : r.status === "failed"
+            ? `<button class="btn ghost" data-id="${r.id}"><span>查看原因</span></button>`
+            : `<button class="btn ghost" data-id="${r.id}"><span>加载</span></button>`;
       return `<tr>
         <td>${r.created_at}</td>
         <td>${MODE_LABEL[r.mode] ?? r.mode}</td>
         <td>${esc(r.file_name ?? extra ?? "-")}</td>
-        <td><button class="btn ghost" data-id="${r.id}"><span>加载</span></button></td>
+        <td>${statusBadge}</td>
+        <td>${action}</td>
       </tr>`;
     }).join("")}
   </table></div>`;
@@ -330,6 +343,10 @@ async function renderCachedReport(id) {
   state.aiThread = null;
   try {
     const r = await api(`/api/ai/report?id=${id}`);
+    if (r.status === "pending") {
+      body.innerHTML = `<div class="callout info">报告正在生成中，请稍后再刷新查看。</div>`;
+      return;
+    }
     body.innerHTML = `<div class="ai-result">${r.html || renderMarkdownFallback(r.markdown)}</div>`;
     state.aiThread = {
       file_name: r.file_name,
@@ -765,20 +782,29 @@ async function renderActivityDetail(name) {
       const reports = (await api(`/api/ai/reports?mode=review`)).reports
         .filter((r) => r.file_name === name);
       if (reports.length) {
-        const cached = await api(`/api/ai/report?id=${reports[0].id}`);
+        const rep = reports[0];
         panel.style.display = "";
-        panel.querySelector(".panel-title").innerHTML =
-          `AI 复盘报告（已缓存 #${reports[0].id}）` +
-          `<button class="btn ghost" id="btnRegenReview" style="margin-left:auto"><span>重新生成</span></button>`;
-        body.innerHTML = `<div class="ai-result">${cached.html}</div>`;
-        state.aiThread = {
-          file_name: name,
-          messages: [{ role: "assistant", content: cached.markdown }],
-        };
-        attachFollowUp(panel, body);
-        $("#btnRegenReview").addEventListener("click", () =>
-          runAi({ mode: "review", file_name: name }, panel, body),
-        );
+        if (rep.status === "pending") {
+          panel.querySelector(".panel-title").innerHTML = "AI 复盘报告（生成中…）";
+          body.innerHTML = `<div class="callout info">AI 复盘报告正在后台生成中，请稍后再刷新查看。</div>`;
+        } else if (rep.status === "failed") {
+          panel.querySelector(".panel-title").innerHTML = "AI 复盘报告（生成失败）";
+          body.innerHTML = `<div class="callout">生成失败：${esc(rep.error || "未知错误")}</div>`;
+        } else {
+          const cached = await api(`/api/ai/report?id=${rep.id}`);
+          panel.querySelector(".panel-title").innerHTML =
+            `AI 复盘报告（已缓存 #${rep.id}）` +
+            `<button class="btn ghost" id="btnRegenReview" style="margin-left:auto"><span>重新生成</span></button>`;
+          body.innerHTML = `<div class="ai-result">${cached.html}</div>`;
+          state.aiThread = {
+            file_name: name,
+            messages: [{ role: "assistant", content: cached.markdown }],
+          };
+          attachFollowUp(panel, body);
+          $("#btnRegenReview").addEventListener("click", () =>
+            runAi({ mode: "review", file_name: name }, panel, body),
+          );
+        }
       }
       // 顶部 AI 复盘按钮：已有报告时跳到底部，否则触发后台分析
       $("#btnAiReview").addEventListener("click", () => {

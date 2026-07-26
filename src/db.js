@@ -53,9 +53,12 @@ function openDb() {
       compare_with TEXT,
       prompt TEXT NOT NULL,
       markdown TEXT NOT NULL,
+      status TEXT DEFAULT 'completed',
+      error TEXT,
       created_at TEXT DEFAULT (datetime('now'))
     );
     CREATE INDEX IF NOT EXISTS idx_ai_reports_mode_created ON ai_reports(mode, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_ai_reports_status ON ai_reports(status);
 
     CREATE TABLE IF NOT EXISTS settings (
       key TEXT PRIMARY KEY,
@@ -63,6 +66,7 @@ function openDb() {
     );
   `);
   ensureActivityCategoryColumn(_db);
+  ensureAiReportStatusColumn(_db);
   return _db;
 }
 
@@ -72,6 +76,18 @@ function ensureActivityCategoryColumn(db) {
   if (!cols.some((c) => c.name === "category")) {
     db.exec(`ALTER TABLE activities ADD COLUMN category TEXT DEFAULT 'training'`);
     db.exec(`UPDATE activities SET category = 'training' WHERE category IS NULL`);
+  }
+}
+
+/** 为已存在的数据库迁移增加 ai_reports.status / ai_reports.error 列 */
+function ensureAiReportStatusColumn(db) {
+  const cols = db.prepare(`PRAGMA table_info(ai_reports)`).all();
+  if (!cols.some((c) => c.name === "status")) {
+    db.exec(`ALTER TABLE ai_reports ADD COLUMN status TEXT DEFAULT 'completed'`);
+    db.exec(`UPDATE ai_reports SET status = 'completed' WHERE status IS NULL`);
+  }
+  if (!cols.some((c) => c.name === "error")) {
+    db.exec(`ALTER TABLE ai_reports ADD COLUMN error TEXT DEFAULT NULL`);
   }
 }
 
@@ -315,8 +331,8 @@ export function saveAiReport(mode, context, prompt, markdown) {
   const db = openDb();
   const info = db
     .prepare(
-      `INSERT INTO ai_reports (mode, file_name, race_date, compare_with, prompt, markdown)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO ai_reports (mode, file_name, race_date, compare_with, prompt, markdown, status)
+       VALUES (?, ?, ?, ?, ?, ?, 'completed')`,
     )
     .run(
       mode,
@@ -336,12 +352,49 @@ export function saveAiReport(mode, context, prompt, markdown) {
   return Number(info.lastInsertRowid);
 }
 
+/** 创建一个 status = pending 的 AI 报告占位记录，用于后台生成时前端可见进度 */
+export function createPendingAiReport(mode, context, prompt) {
+  const db = openDb();
+  const info = db
+    .prepare(
+      `INSERT INTO ai_reports (mode, file_name, race_date, compare_with, prompt, markdown, status)
+       VALUES (?, ?, ?, ?, ?, '', 'pending')`,
+    )
+    .run(
+      mode,
+      context?.file_name ?? null,
+      context?.race_date ?? null,
+      context?.compare_with ?? null,
+      prompt ?? "",
+    );
+  // 同样受 30 条滚动限制；pending 占位也参与计数
+  db.prepare(
+    `DELETE FROM ai_reports
+     WHERE id NOT IN (
+       SELECT id FROM ai_reports WHERE mode = ? ORDER BY id DESC LIMIT 30
+     ) AND mode = ?`,
+  ).run(mode, mode);
+  return Number(info.lastInsertRowid);
+}
+
+/** 更新 AI 报告（后台生成成功/失败时回填） */
+export function updateAiReport(id, { markdown, status, error } = {}) {
+  const db = openDb();
+  db.prepare(
+    `UPDATE ai_reports
+     SET markdown = COALESCE(?, markdown),
+         status = COALESCE(?, status),
+         error = COALESCE(?, error)
+     WHERE id = ?`,
+  ).run(markdown ?? null, status ?? null, error ?? null, id);
+}
+
 /** 列出某 mode 的最近 N 条报告（默认 30） */
 export function listAiReports(mode, n = 30) {
   const db = openDb();
   const rows = db
     .prepare(
-      `SELECT id, mode, file_name, race_date, compare_with, created_at
+      `SELECT id, mode, file_name, race_date, compare_with, status, error, created_at
        FROM ai_reports WHERE mode = ? ORDER BY id DESC LIMIT ?`,
     )
     .all(mode, n);
@@ -351,11 +404,13 @@ export function listAiReports(mode, n = 30) {
     file_name: r.file_name,
     race_date: r.race_date,
     compare_with: r.compare_with,
+    status: r.status,
+    error: r.error,
     created_at: r.created_at,
   }));
 }
 
-/** 按 id 取单条完整报告（含 prompt + markdown），不存在返回 null */
+/** 按 id 取单条完整报告（含 prompt + markdown + status + error），不存在返回 null */
 export function getAiReport(id) {
   const db = openDb();
   const row = db.prepare(`SELECT * FROM ai_reports WHERE id = ?`).get(id);
@@ -368,6 +423,8 @@ export function getAiReport(id) {
     compare_with: row.compare_with,
     prompt: row.prompt,
     markdown: row.markdown,
+    status: row.status,
+    error: row.error,
     created_at: row.created_at,
   };
 }
