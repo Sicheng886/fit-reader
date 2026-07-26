@@ -1,4 +1,4 @@
-ARG NODE_IMAGE=docker.io/library/node:22-slim
+ARG NODE_IMAGE=docker.io/library/node:24-slim
 FROM ${NODE_IMAGE}
 
 WORKDIR /app

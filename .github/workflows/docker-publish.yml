@@ -43,7 +43,7 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            NODE_IMAGE=${{ vars.NODE_IMAGE || 'docker.io/library/node:22-slim' }}
+            NODE_IMAGE=${{ vars.NODE_IMAGE || 'docker.io/library/node:24-slim' }}
 
       - name: Generate artifact attestation
         uses: actions/attest@v4
