@@ -176,7 +176,7 @@ main {
 }
 .btn.ghost:hover { border-color: var(--volt); color: var(--volt); }
 
-select, input[type="date"], input[type="file"], input[type="number"] {
+select, input[type="date"], input[type="file"], input[type="number"], input[type="text"], input[type="password"] {
   background: var(--panel-2);
   border: 1px solid var(--line);
   color: var(--text);
@@ -195,9 +195,9 @@ select:focus, input:focus { border-color: var(--volt); }
 /* 设置页表单 */
 .settings-form {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   gap: 14px;
-  max-width: 640px;
+  max-width: 920px;
 }
 .settings-form label {
   display: flex;
@@ -856,6 +856,11 @@ svg.chart .axis-zero { stroke: var(--line); stroke-dasharray: 4 4; }
   .detail-head { flex-direction: column; align-items: flex-start; gap: 10px; }
   .detail-head .spacer { display: none; }
   .detail-head .btn { align-self: stretch; }
+
+  /* 时序/趋势图：不再横向压缩进窄屏，固定 900px 宽 + 容器内横向滚动，
+     保持与桌面端接近的点密度和文字比例 */
+  .chart-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .chart-wrap svg.chart { width: 900px; max-width: none; }
 
   /* FTP 估算面板 */
   .ftp-big { font-size: 42px; }
