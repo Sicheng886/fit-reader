@@ -58,7 +58,6 @@ function openDb() {
       created_at TEXT DEFAULT (datetime('now'))
     );
     CREATE INDEX IF NOT EXISTS idx_ai_reports_mode_created ON ai_reports(mode, created_at DESC);
-    CREATE INDEX IF NOT EXISTS idx_ai_reports_status ON ai_reports(status);
 
     CREATE TABLE IF NOT EXISTS settings (
       key TEXT PRIMARY KEY,
@@ -79,7 +78,7 @@ function ensureActivityCategoryColumn(db) {
   }
 }
 
-/** 为已存在的数据库迁移增加 ai_reports.status / ai_reports.error 列 */
+/** 为已存在的数据库迁移增加 ai_reports.status / ai_reports.error 列及对应索引 */
 function ensureAiReportStatusColumn(db) {
   const cols = db.prepare(`PRAGMA table_info(ai_reports)`).all();
   if (!cols.some((c) => c.name === "status")) {
@@ -89,6 +88,7 @@ function ensureAiReportStatusColumn(db) {
   if (!cols.some((c) => c.name === "error")) {
     db.exec(`ALTER TABLE ai_reports ADD COLUMN error TEXT DEFAULT NULL`);
   }
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_ai_reports_status ON ai_reports(status)`);
 }
 
 /** 关闭数据库句柄（测试清理临时库文件前调用；生产路径无需调用） */
