@@ -1,4 +1,5 @@
 ARG NODE_IMAGE=docker.io/library/node:24-slim
+ARG VERSION=latest
 FROM ${NODE_IMAGE}
 
 WORKDIR /app
@@ -9,7 +10,8 @@ ENV NODE_ENV=production \
     FIT_INPUT_DIR=/input \
     FIT_OUTPUT_DIR=/output \
     FIT_DB_PATH=/app/db/fitness.db \
-    PORT=3000
+    PORT=3000 \
+    APP_VERSION=${VERSION}
 
 COPY package*.json ./
 RUN npm ci --omit=dev

@@ -210,7 +210,68 @@ user: "1000:1000"  # 改成你的宿主机 uid:gid
 
 ---
 
-## 9. 检查清单
+## 9. 发布带版本号的镜像到 GitHub Packages
+
+项目版本号以 `package.json` 的 `version` 字段为准。发布新版本时，应同时给镜像打上**具体版本号标签**和 **`latest` 标签**，并一起推送——Docker registry 不会自动让 `latest` 指向最新版本，必须显式重新推送。
+
+### 9.1 确认版本号
+
+```bash
+node -p "require('./package.json').version"
+```
+
+若需要升级版本，按 `AGENTS.md` 约定先执行 `npm version patch|minor|major --no-git-tag-version`。
+
+### 9.2 登录 GitHub Container Registry
+
+```bash
+gh auth token | docker login ghcr.io -u USERNAME --password-stdin
+```
+
+其中 `USERNAME` 替换为你的 GitHub 用户名。
+
+### 9.3 构建并推送（同时打 version + latest 标签）
+
+```bash
+VERSION=$(node -p "require('./package.json').version")
+OWNER=$(gh api user -q .login)   # 或手动写死为你的 GitHub 用户名/组织名
+IMAGE=ghcr.io/${OWNER}/fit-reader
+
+docker build \
+  --build-arg VERSION=${VERSION} \
+  -t ${IMAGE}:${VERSION} \
+  -t ${IMAGE}:latest \
+  .
+
+docker push ${IMAGE}:${VERSION}
+docker push ${IMAGE}:latest
+```
+
+> **为什么必须同时 push `latest`？** Docker 的 `latest` 只是一个普通标签，没有自动更新语义。只有每次发布新版本时都重新给新镜像打上 `latest` 并推送，仓库里的 `latest` 才会指向最新版本。
+
+推送完成后，在 GitHub Packages 页面能看到两个标签：
+
+- `ghcr.io/<OWNER>/fit-reader:<VERSION>`（不可变，建议生产环境锁定该标签）
+- `ghcr.io/<OWNER>/fit-reader:latest`（可变，方便快速体验/测试）
+
+### 9.4 拉取最新版本运行
+
+```bash
+docker pull ghcr.io/<OWNER>/fit-reader:latest
+docker run -d \
+  --name fit-reader \
+  -p 3000:3000 \
+  -v "$(pwd)/input:/input" \
+  -v "$(pwd)/output:/output" \
+  -v "$(pwd)/db:/app/db" \
+  ghcr.io/<OWNER>/fit-reader:latest
+```
+
+生产环境建议锁定具体版本号，例如 `ghcr.io/<OWNER>/fit-reader:1.0.0`。
+
+---
+
+## 10. 检查清单
 
 部署前确认：
 
