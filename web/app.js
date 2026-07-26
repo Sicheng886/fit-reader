@@ -933,7 +933,7 @@ async function renderAI() {
   const aiInfo = ov.ai || {};
   const cfgNote = aiInfo.configured
     ? `<div class="callout info">AI 已配置：${esc(aiInfo.base_url)} · 模型 ${esc(aiInfo.model)}</div>`
-    : `<div class="callout">未配置 FIT_AI_API_KEY — 将生成完整提示词供手动复制到任意 AI（配置后自动直接输出报告）</div>`;
+    : `<div class="callout">未配置 AI 密钥 — 将生成完整提示词供手动复制到任意 AI（到「设置」页填入密钥后可直接输出报告）</div>`;
 
   app.innerHTML = `
     <div class="view-title"><h1>AI 分析</h1><span class="sub">角色 + 指标口径 + 数据 + 问题，一键生成复盘报告</span></div>
@@ -1111,13 +1111,16 @@ function renderChatBubble(container, role, content) {
 
 async function renderSettings() {
   app.innerHTML = `<div class="empty loading">加载中…</div>`;
-  const { athlete, configured } = await api("/api/athlete");
+  const [{ athlete, configured }, { config: ai }] = await Promise.all([
+    api("/api/athlete"),
+    api("/api/ai-config"),
+  ]);
   const banner =
     state.firstRun && !configured
-      ? `<div class="callout info">首次使用：请先设置骑手参数（FTP / 最大心率 / 体重），它们是所有派生指标准确性的前提。保存后存入训练库，之后可随时回到本页调整。</div>`
+      ? `<div class="callout info">首次使用：请先设置骑手参数（FTP / 最大心率 / 体重）与 AI 密钥，它们是所有派生指标与 AI 报告的前提。保存后存入训练库并跳回首页，之后可随时回到本页调整。</div>`
       : "";
   app.innerHTML = `
-    <div class="view-title"><h1>设置</h1><span class="sub">骑手参数保存在训练库中，分析新文件时自动生效</span></div>
+    <div class="view-title"><h1>设置</h1><span class="sub">参数保存在训练库中，分析新文件时自动生效</span></div>
     ${banner}
     <div class="panel">
       <div class="panel-title">骑手参数</div>
@@ -1132,17 +1135,51 @@ async function renderSettings() {
           <input type="number" id="setWeight" min="30" max="200" step="0.1" value="${athlete.weight_kg ?? ""}">
         </label>
       </div>
-      <div style="margin-top:16px;display:flex;gap:12px;align-items:center">
-        <button class="btn" id="btnSaveAthlete"><span>保存</span></button>
-        <span class="muted" id="athleteSaved" style="display:none">已保存 ✓ 后续分析将使用新参数</span>
-      </div>
       <p class="muted" style="margin-top:16px;font-size:12px">
         说明：修改参数只影响之后分析的训练；已归档训练的指标按当时口径保留。
         分区定义与算法阈值（间歇/爬坡识别等）仍在 settings.js 中调整。
       </p>
+    </div>
+    <div class="panel">
+      <div class="panel-title">AI 服务</div>
+      <div class="settings-form">
+        <label>API 密钥（留空则退化为复制提示词模式）
+          <input type="password" id="setAiKey" placeholder="sk-..." value="${esc(ai.api_key ?? "")}" autocomplete="off">
+        </label>
+        <label>接口地址（OpenAI 兼容）
+          <input type="text" id="setAiBaseUrl" value="${esc(ai.base_url ?? "")}">
+        </label>
+        <label>模型名
+          <input type="text" id="setAiModel" value="${esc(ai.model ?? "")}">
+        </label>
+      </div>
+      <details style="margin-top:12px">
+        <summary class="muted" style="cursor:pointer;font-size:12px">高级选项（一般无需修改）</summary>
+        <div class="settings-form" style="margin-top:12px">
+          <label>采样温度（留空表示不传）
+            <input type="number" id="setAiTemperature" min="0" max="2" step="0.1" value="${ai.temperature ?? ""}">
+          </label>
+          <label>总超时（毫秒）
+            <input type="number" id="setAiTimeout" min="1000" step="1000" value="${ai.timeout_ms ?? ""}">
+          </label>
+          <label>流式空闲超时（毫秒）
+            <input type="number" id="setAiStall" min="1000" step="1000" value="${ai.stall_ms ?? ""}">
+          </label>
+          <label style="flex-direction:row;align-items:center;gap:8px">
+            <input type="checkbox" id="setAiStream" style="width:auto" ${ai.stream ? "checked" : ""}> 启用流式输出
+          </label>
+        </div>
+      </details>
+      <p class="muted" style="margin-top:16px;font-size:12px">
+        说明：密钥保存在本地训练库中，不会上传到其他任何地方；模型名以你的账号可用列表为准。
+      </p>
+    </div>
+    <div style="margin-top:16px;display:flex;gap:12px;align-items:center">
+      <button class="btn" id="btnSaveSettings"><span>保存</span></button>
+      <span class="muted" id="settingsSaved" style="display:none">已保存 ✓</span>
     </div>`;
-  $("#btnSaveAthlete").addEventListener("click", async () => {
-    const btn = $("#btnSaveAthlete");
+  $("#btnSaveSettings").addEventListener("click", async () => {
+    const btn = $("#btnSaveSettings");
     btn.disabled = true;
     try {
       const r = await api("/api/athlete", {
@@ -1154,13 +1191,25 @@ async function renderSettings() {
           weight_kg: Number($("#setWeight").value),
         }),
       });
+      await api("/api/ai-config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          api_key: $("#setAiKey").value,
+          base_url: $("#setAiBaseUrl").value,
+          model: $("#setAiModel").value,
+          temperature: $("#setAiTemperature").value,
+          timeout_ms: Number($("#setAiTimeout").value),
+          stall_ms: Number($("#setAiStall").value),
+          stream: $("#setAiStream").checked,
+        }),
+      });
       state.firstRun = false;
       state.overview = null; // 概览缓存作废，下次加载取新参数
       renderAthleteChip(r.athlete);
-      $("#athleteSaved").style.display = "";
+      location.hash = "#/dashboard"; // 保存后跳回首页
     } catch (e) {
       alert(`保存失败：${e.message}`);
-    } finally {
       btn.disabled = false;
     }
   });

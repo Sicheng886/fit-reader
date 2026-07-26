@@ -45,27 +45,20 @@ npm run web
 - **训练**：训练库全部记录列表；点进详情有时序曲线（功率/心率/踏频/海拔/速度，可开关系列）、分区分布、峰功率曲线、赛段/间歇/爬坡、数据质量
 - **上传**：拖拽 .fit 文件即分析入库（文件存 `input/`，结果写 `output/`）
 - **AI 分析**：单次复盘 / 周期规划 / 赛前减量 / 两次对比四种场景一键生成报告
-- **设置**：骑手参数（FTP / 最大心率 / 体重）维护，保存入训练库；未配置过时首次打开会自动引导到此页
+- **设置**：骑手参数（FTP / 最大心率 / 体重）与 AI 服务（密钥 / 接口 / 模型）维护，保存入训练库并跳回首页；未配置过时首次打开会自动引导到此页
 
-AI 直接出报告需配置环境变量（OpenAI 兼容接口，Kimi/OpenAI/DeepSeek 均可）。最简单的方式是在项目根目录建一个 `.env` 文件（已在 `.gitignore` 中，`npm run web` 启动时通过 Node 内置 `process.loadEnvFile()` 自动注入，无需 dotenv）：
+AI 直接出报告需在 Web「设置」页配置 AI 服务（OpenAI 兼容接口，Kimi/OpenAI/DeepSeek 均可），配置保存在训练库 settings 表中，**不需要任何环境变量或 `.env` 文件**：
 
-```ini
-FIT_AI_API_KEY=sk-...                          # 必填
-FIT_AI_BASE_URL=https://api.moonshot.cn/v1     # 可选，默认 Kimi
-FIT_AI_MODEL=moonshot-v1-32k                   # 可选，复盘提示词较长建议 32k 上下文
-FIT_AI_TEMPERATURE=0.3                         # 可选，缺省不传（部分模型只允许特定取值，如 kimi-k2.x 只允许 1）
-FIT_AI_TIMEOUT_MS=600000                       # 可选，默认 10 分钟（600000ms）；复盘报告生成较慢，旧版 5 分钟容易被掐断
-FIT_AI_STREAM=false                            # 可选，默认 false；部分账号/模型不会真正流式吐字，非流式更稳
-FIT_AI_STALL_MS=120000                         # 可选，仅在 FIT_AI_STREAM=true 时生效：流空闲超时，默认 60s
-```
+- **API 密钥**：必填，留空则退化为复制提示词模式；
+- **接口地址 / 模型名**：已预填 Kimi（`https://api.moonshot.cn/v1` + `kimi-k2.6`），复盘提示词较长建议 32k 以上上下文的模型；
+- **高级选项**（折叠在设置页，一般无需修改）：采样温度（留空不传，部分模型只允许特定取值）、总超时（默认 10 分钟）、流式开关（默认关，部分账号/模型不真正流式吐字时非流式更稳）、流式空闲超时（默认 60s）。
 
 - AI 报告会自动写入 `ai_reports` 表并按 mode 保留最近 30 条；Web 界面「AI 分析」页可查看历史报告并加载，也可在报告下方继续追问（不缓存）。
 - 训练详情页支持把记录标记为 训练 / 比赛 / 恢复 / 休闲；AI 复盘会基于分类解读。
 - 输出用 `marked` 在服务端转成 HTML，前端直接渲染，支持表格、代码块等 Markdown 元素
-- 模型名以你的账号可用列表为准（可用 `GET $FIT_AI_BASE_URL/models` 带密钥查询）
+- 模型名以你的账号可用列表为准（可用 `GET 接口地址/models` 带密钥查询）
 
-
-也可以用传统方式 export（Windows PowerShell: `$env:FIT_AI_API_KEY="sk-..."`）。模型名以你的账号可用列表为准（可用 `GET $FIT_AI_BASE_URL/models` 带密钥查询）。
+> 老版本升级：`.env` 里的 `FIT_AI_*` 会在首次启动时一次性自动迁入训练库，之后 `.env` 可删除。
 
 未配置密钥时自动退化为 P2 模式：生成完整提示词 + 一键复制按钮，粘贴到任意 AI 即可。
 
@@ -78,7 +71,7 @@ FIT_AI_STALL_MS=120000                         # 可选，仅在 FIT_AI_STREAM=t
 
 `src/settings.js` 里仍保留两份内容：
 
-- `ATHLETE`：骑手参数**出厂默认值**——训练库中没有配置时兜底使用（全新部署、纯 CLI 首次分析）；
+- `ATHLETE` / `AI_CONFIG`：骑手参数与 AI 服务的**出厂默认值**——训练库中没有配置时兜底使用（全新部署、纯 CLI 首次分析）；
 - 功率/心率分区、间歇识别/爬坡提取/踏频分析的**算法阈值**，仍在这个文件里集中调整。
 
 ```js
@@ -189,7 +182,7 @@ export const ATHLETE = {
 
 ### P4 — 可选扩展
 
-- [x] **对接 AI API**：`src/ai.js` 直接调 OpenAI 兼容接口（`FIT_AI_API_KEY`/`FIT_AI_BASE_URL`/`FIT_AI_MODEL`，默认 Kimi），输出 Markdown 复盘报告；未配置密钥时退化为复制提示词模式
+- [x] **对接 AI API**：`src/ai.js` 直接调 OpenAI 兼容接口（配置存训练库、Web 设置页维护，默认 Kimi），输出 Markdown 复盘报告；未配置密钥时退化为复制提示词模式
 - [x] **Web 界面**：`npm run web`（`server.js` 零依赖 HTTP 服务 + `web/` 纯前端 SPA）——训练库仪表盘、训练详情图表、上传 FIT 分析、AI 分析结果展示
 - [ ] **对接 TrainingPeaks / intervals.icu**：对比其官方指标，校验自己的算法
 
@@ -199,18 +192,16 @@ export const ATHLETE = {
 
 ## Docker 部署
 
-项目已支持一键打包为 Docker 镜像并作为 Web 服务部署。`input/` 与 `output/` 通过卷挂载到宿主机，`.env` 环境变量在容器启动时注入，不会打包进镜像。
+项目已支持一键打包为 Docker 镜像并作为 Web 服务部署。`input/` 与 `output/` 通过卷挂载到宿主机；AI 密钥等配置在 Web 设置页维护、存训练库，**不需要 `.env`**。
 
 快速开始：
 
 ```bash
-cp .env.example .env
-# 编辑 .env，填入 FIT_AI_API_KEY
 docker build -t fit-reader:latest .
 docker compose up -d
 ```
 
-然后打开 http://localhost:3000 即可使用。
+然后打开 http://localhost:3000 ，在设置页填入骑手参数与 AI 密钥即可使用。
 
 完整部署说明（含 API Key 获取教学、批量分析、持久化建议）见 [DEPLOY.md](./DEPLOY.md)。
 
@@ -223,7 +214,7 @@ docker compose up -d
 | `src/ftp.js`             | FTP 历史估算：CP 模型 + Coggan 20min×0.95 双法互校 + 心率交叉验证/数据充分性诊断（纯函数） |
 | `src/db.js`              | 训练库：SQLite 入库/去重、CTL/ATL/TSB 计算、月汇总与趋势数据；AI 报告缓存（`ai_reports` 表，每 mode 最近 30 条） |
 | `src/prompts.js`         | AI 提示词模板库：复盘/规划/赛前/对比四种场景的提示词组装；提交前用 `compactSummaryForPrompt` 把随时长增长的 anomalies/segments/climbs 列表压缩为聚合统计，提示词长度与训练时长无关 |
-| `src/ai.js`              | AI API 客户端（P4）：OpenAI 兼容 chat/completions，默认 Kimi；基于 node:http(s) 自行管理超时（避开内置 fetch/undici 的 300s 隐藏超时），支持流式/非流式、心跳日志 |
+| `src/ai.js`              | AI API 客户端（P4）：OpenAI 兼容 chat/completions；配置存训练库 settings 表（Web 设置页维护，默认 Kimi），不读环境变量；基于 node:http(s) 自行管理超时（避开内置 fetch/undici 的 300s 隐藏超时），支持流式/非流式、心跳日志 |
 | `server.js`              | Web 服务（P4）：零依赖 HTTP 服务 + REST API（含 `POST /api/ai` 保存并返回 HTML、`GET /api/ai/reports`、`GET /api/ai/report`） |
 | `web/`                   | Web 前端（P4）：纯 HTML/CSS/JS SPA，手写 SVG 图表，暗色运动风；AI 输出用服务端 `marked` HTML 渲染，支持历史报告列表 |
 | `test/make_test_fit.mjs` | 测试工具：手写 FIT 二进制生成器（骑行/跑步/游泳/损坏场景） |

@@ -8,59 +8,12 @@
 
 - 已安装 Docker（建议 24.x 或更高）
 - 已安装 Docker Compose（v2，即 `docker compose` 命令可用）
-- 项目根目录已包含 `.env` 文件（见下文配置）
+
+> 本项目**不需要 `.env` 文件**：AI 密钥等所有用户配置都在 Web「设置」页填写，保存在训练库（SQLite）中。
 
 ---
 
-## 1. 配置环境变量
-
-项目根目录有 `.env.example` 模板，先复制为正式 `.env`：
-
-```bash
-cp .env.example .env
-```
-
-然后编辑 `.env`，**至少设置 `FIT_AI_API_KEY`**，其余变量已带默认值。
-
-### 1.1 必须设置：FIT_AI_API_KEY
-
-`FIT_AI_API_KEY` 是调用 Moonshot AI（Kimi）生成报告的密钥。未设置时，Web 界面仍可使用，但「AI 分析」会退化为「复制提示词」模式，需要你手动把提示词贴到 AI 对话框。
-
-**获取 Moonshot API Key 的步骤：**
-
-1. 打开 [Moonshot 开放平台](https://platform.moonshot.cn/)，登录/注册账号。
-2. 进入「API Key 管理」页面（通常在左侧菜单或顶部导航）。
-3. 点击「创建 API Key」，给 Key 起个名字，例如 `fit-reader`。
-4. 创建成功后，复制以 `sk-` 开头的字符串。
-5. 打开项目根目录的 `.env` 文件，把复制的字符串填到 `FIT_AI_API_KEY=` 后面：
-
-```ini
-FIT_AI_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-```
-
-> ⚠️ 安全提示：API Key 等同于账号密码，不要把它提交到 git，不要分享到公开仓库。项目 `.gitignore` 已排除 `.env`。
-
-### 1.2 其它环境变量（可选）
-
-```ini
-# AI 接口地址，默认 Kimi
-FIT_AI_BASE_URL=https://api.moonshot.cn/v1
-
-# 模型名，默认 kimi-k2.6
-FIT_AI_MODEL=kimi-k2.6
-
-# AI 请求超时，默认 10 分钟（复盘提示词较长，建议保持 600000）
-FIT_AI_TIMEOUT_MS=600000
-
-# Web 服务端口，默认 3000
-PORT=3000
-```
-
-除 `FIT_AI_API_KEY` 外，其余变量在 `Dockerfile` 中已设置默认值，`.env` 里的值会覆盖默认值。
-
----
-
-## 2. 构建镜像
+## 1. 构建镜像
 
 在项目根目录执行：
 
@@ -72,12 +25,11 @@ docker build -t fit-reader:latest .
 
 ---
 
-## 3. 启动容器（推荐：docker compose）
+## 2. 启动容器（推荐：docker compose）
 
 项目已提供 `docker-compose.yml`，最简启动方式：
 
 ```bash
-# 确保 .env 已配置好
 docker compose up -d
 ```
 
@@ -87,7 +39,7 @@ docker compose up -d
 http://localhost:3000
 ```
 
-如果 `.env` 里修改了 `PORT`，请把 `docker-compose.yml` 里的端口映射或启动命令里的 `localhost:3000` 对应调整。
+如需改宿主机端口，调整 `docker-compose.yml` 里的端口映射（容器内部端口固定 3000；也可用环境变量 `PORT` 改容器内端口）。
 
 ### 停止与重启
 
@@ -100,13 +52,35 @@ docker compose pull          # 如果镜像已推送到仓库，先拉取最新
 
 ---
 
+## 3. 首次使用：设置骑手参数与 AI 密钥
+
+首次打开 Web 界面会自动引导到「设置」页：
+
+1. **骑手参数**：FTP / 最大心率 / 体重——所有派生指标（NP/IF/TSS/分区）准确性的前提。
+2. **AI 服务**：填入 API 密钥即可让「AI 分析」一键出报告；接口地址与模型名已预填 Kimi（`https://api.moonshot.cn/v1` + `kimi-k2.6`），用其它 OpenAI 兼容服务（OpenAI/DeepSeek 等）改这两个字段即可。
+
+保存后写入训练库并跳回首页，之后可随时回设置页调整。
+
+**获取 Moonshot API Key 的步骤：**
+
+1. 打开 [Moonshot 开放平台](https://platform.moonshot.cn/)，登录/注册账号。
+2. 进入「API Key 管理」页面，点击「创建 API Key」，起个名字，例如 `fit-reader`。
+3. 复制以 `sk-` 开头的字符串，粘贴到设置页的「API 密钥」输入框。
+
+> ⚠️ 安全提示：API Key 等同于账号密码。它只保存在本地训练库（`./db/fitness.db`，已被 `.gitignore` 排除）中，用于向你配置的接口地址发请求，不会上传到任何其它地方。
+
+> 不填密钥也能正常使用：Web 界面除 AI 报告外全部可用，「AI 分析」会生成完整提示词供你复制到任意 AI 工具。
+
+> 老版本升级：如果你之前在 `.env` 里配置过 `FIT_AI_API_KEY`，首次启动新版本时会自动把 `FIT_AI_*` 环境变量一次性迁入训练库（日志会打印迁移提示），之后 `.env` 可删除。
+
+---
+
 ## 4. 纯 docker run 方式（不安装 docker compose 时使用）
 
 ```bash
 docker run -d \
   --name fit-reader \
   -p 3000:3000 \
-  --env-file .env \
   -v "$(pwd)/input:/input" \
   -v "$(pwd)/output:/output" \
   -v "$(pwd)/db:/app/db" \
@@ -119,7 +93,6 @@ Windows PowerShell 中挂载路径写法：
 docker run -d `
   --name fit-reader `
   -p 3000:3000 `
-  --env-file .env `
   -v "${PWD}/input:/input" `
   -v "${PWD}/output:/output" `
   -v "${PWD}/db:/app/db" `
@@ -134,7 +107,6 @@ docker run -d `
 
 ```bash
 docker run --rm \
-  --env-file .env \
   -v "$(pwd)/input:/input" \
   -v "$(pwd)/output:/output" \
   fit-reader:latest \
@@ -151,31 +123,30 @@ docker run --rm \
 | --- | --- | --- |
 | `/input` | **必须** | 存放待分析的 `.fit` 文件 |
 | `/output` | **必须** | 分析后生成的 CSV、JSON、趋势图 |
-| `/app/db` | **强烈建议** | SQLite 训练库，挂载后容器重建不会丢失历史数据 |
-| `/app/settings.js` | 可选 | 自定义骑手参数（FTP、最大心率、分区阈值等） |
+| `/app/db` | **强烈建议** | SQLite 训练库（含骑手参数与 AI 密钥设置），挂载后容器重建不会丢失 |
+| `/app/src/settings.js` | 可选 | 自定义算法阈值 / 出厂默认值 |
 
 ### 自定义骑手参数与算法阈值
 
-骑手参数（FTP / 最大心率 / 体重）**不需要挂载任何文件**：直接在 Web 界面「设置」页修改，保存在训练库（`/app/db`，已挂载持久化）中，分析新文件时自动生效。首次打开 Web 界面且未配置过时，会自动引导到设置页。
+骑手参数（FTP / 最大心率 / 体重）与 AI 服务配置**不需要挂载任何文件**：直接在 Web 界面「设置」页修改，保存在训练库（`/app/db`，已挂载持久化）中，保存后即时生效。首次打开 Web 界面且未配置过时，会自动引导到设置页。
 
-如需调整算法阈值（分区、间歇/爬坡识别等）或骑手参数的出厂默认值，才把本机 `settings.js` 挂载进容器：
+如需调整算法阈值（分区、间歇/爬坡识别等）或骑手参数的出厂默认值，才把本机 `src/settings.js` 挂载进容器：
 
 ```bash
-# 编辑 settings.js 里的分区 / 阈值 / ATHLETE 出厂默认值
+# 编辑 src/settings.js 里的分区 / 阈值 / ATHLETE、AI_CONFIG 出厂默认值
 docker run -d \
   --name fit-reader \
   -p 3000:3000 \
-  --env-file .env \
   -v "$(pwd)/input:/input" \
   -v "$(pwd)/output:/output" \
   -v "$(pwd)/db:/app/db" \
-  -v "$(pwd)/settings.js:/app/settings.js" \
+  -v "$(pwd)/src/settings.js:/app/src/settings.js" \
   fit-reader:latest
 ```
 
-或者在 `docker-compose.yml` 中保留 `- ./settings.js:/app/settings.js` 挂载。
+或者在 `docker-compose.yml` 中保留 `- ./src/settings.js:/app/src/settings.js` 挂载。
 
-> 注意：库中已有 athlete 配置时，`settings.js` 里的 `ATHLETE` 不再生效（它只是出厂默认值）；改阈值需要重建容器或重启。
+> 注意：库中已有 athlete / ai 配置时，`settings.js` 里的 `ATHLETE` / `AI_CONFIG` 不再生效（它们只是出厂默认值）；改阈值需要重建容器或重启。
 
 ---
 
@@ -205,7 +176,6 @@ docker compose up -d
 2. 查看日志：`docker logs fit-reader`
 3. 检查端口是否被占用：
    - 在 `docker-compose.yml` 或 `docker run` 中换一个宿主机端口，例如 `-p 8080:3000`
-   - 同时确保 `.env` 里的 `PORT=3000` 不变（容器内部端口仍是 3000）
 
 ### 8.2 输出文件权限是 root
 
@@ -216,7 +186,6 @@ docker run -d \
   --name fit-reader \
   -u "$(id -u):$(id -g)" \
   -p 3000:3000 \
-  --env-file .env \
   -v "$(pwd)/input:/input" \
   -v "$(pwd)/output:/output" \
   -v "$(pwd)/db:/app/db" \
@@ -231,13 +200,13 @@ user: "1000:1000"  # 改成你的宿主机 uid:gid
 
 ### 8.3 AI 报告一直超时
 
-- 增大 `FIT_AI_TIMEOUT_MS`（例如 1200000，即 20 分钟）。
-- 检查 Moonshot 账户是否有足够余额。
-- 查看模型是否可用：`curl -H "Authorization: Bearer $FIT_AI_API_KEY" https://api.moonshot.cn/v1/models`
+- 在设置页「AI 服务 → 高级选项」中增大总超时（例如 1200000，即 20 分钟）。
+- 检查 AI 账户是否有足够余额。
+- 查看模型是否可用：`curl -H "Authorization: Bearer sk-你的密钥" https://api.moonshot.cn/v1/models`
 
 ### 8.4 我不想用 AI，只想看 Web 界面和指标
 
-不设置 `FIT_AI_API_KEY` 即可。Web 界面除了 AI 报告按钮外全部可用，AI 报告会生成提示词供你复制到其它 AI 工具。
+设置页留空 API 密钥即可。Web 界面除了 AI 报告按钮外全部可用，AI 报告会生成提示词供你复制到其它 AI 工具。
 
 ---
 
@@ -245,10 +214,9 @@ user: "1000:1000"  # 改成你的宿主机 uid:gid
 
 部署前确认：
 
-- [ ] 已复制 `.env.example` 为 `.env` 并填入 `FIT_AI_API_KEY`
 - [ ] 已创建/确认 `input/` 目录（用于放 `.fit` 文件）
 - [ ] 已创建/确认 `output/` 目录（用于接收结果）
 - [ ] 已运行 `docker build -t fit-reader:latest .` 且成功
 - [ ] 已运行 `docker compose up -d`
-- [ ] 浏览器能打开 `http://localhost:3000`
+- [ ] 浏览器能打开 `http://localhost:3000`，并在设置页保存骑手参数（与 AI 密钥）
 - [ ] 上传一个 `.fit` 文件后，`output/` 出现对应的 CSV 与 JSON

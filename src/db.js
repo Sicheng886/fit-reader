@@ -4,8 +4,10 @@
  *   - 每次分析后把 summary 入库（按文件名去重，重复分析覆盖更新）
  *   - 基于历史 TSS 计算 CTL / ATL / TSB（体能/疲劳/状态）
  *   - 月汇总、趋势数据与提示词上下文查询（recentActivities / recentFormDaily）
- *   - settings 表：骑手参数（athlete）持久化，Web 设置页维护；
- *     syncAthleteFromDb() 把库值原地合并进 settings.js 的 ATHLETE 导出对象
+ *   - settings 表：骑手参数（athlete）与 AI 服务配置（ai）持久化，Web 设置页维护；
+ *     syncAthleteFromDb() / syncAiConfigFromDb() 把库值原地合并进 settings.js 的
+ *     ATHLETE / AI_CONFIG 导出对象；migrateAiEnvToDb() 负责老版本 FIT_AI_*
+ *     环境变量的一次性迁入（迁移后 env 被完全忽略）
  *
  * 数据库文件固定为 ./db/fitness.db（可用环境变量 FIT_DB_PATH 覆盖，供测试隔离），
  * 不存在时自动创建。
@@ -14,7 +16,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { ATHLETE, FTP_ESTIMATION } from "./settings.js";
+import { ATHLETE, AI_CONFIG, FTP_ESTIMATION } from "./settings.js";
 
 const DB_PATH = process.env.FIT_DB_PATH || path.resolve("db", "fitness.db");
 
@@ -146,6 +148,127 @@ export function setAthlete(partial) {
   ).run(JSON.stringify(merged));
   Object.assign(ATHLETE, merged); // 原地生效，当前进程无需重启
   return { ...ATHLETE };
+}
+
+// ---------------- AI 服务配置（存 settings 表，Web 设置页维护） ----------------
+
+/**
+ * 从训练库读取 ai 行并原地覆盖 settings.js 的 AI_CONFIG 导出对象。
+ * 库中无 ai 行时保持 settings.js 出厂默认值（默认 Kimi，api_key 为空）。
+ * server.js 启动时调用；setAiConfig() 保存后也会原地生效。
+ */
+export function syncAiConfigFromDb() {
+  const db = openDb();
+  const row = db.prepare(`SELECT value FROM settings WHERE key = 'ai'`).get();
+  if (!row) return;
+  try {
+    Object.assign(AI_CONFIG, JSON.parse(row.value));
+  } catch {
+    // 行内容损坏时忽略，保持默认值
+  }
+}
+
+/** 当前 AI 配置状态：生效值（库行覆盖默认值）+ 是否已配置密钥 */
+export function getAiConfig() {
+  const db = openDb();
+  const row = db.prepare(`SELECT value FROM settings WHERE key = 'ai'`).get();
+  const config = { ...AI_CONFIG };
+  if (row) {
+    try {
+      Object.assign(config, JSON.parse(row.value));
+    } catch {
+      // 行内容损坏时按默认值返回
+    }
+  }
+  return { config, configured: Boolean(config.api_key) };
+}
+
+/**
+ * 更新 AI 服务配置（允许只给部分字段）：校验 → 合并当前值写库 → 原地生效。
+ * 非法值抛 Error（中文 message，Web API 直接透传给前端）。
+ * api_key 传空字符串表示清除密钥（退化为复制提示词模式）。
+ */
+export function setAiConfig(partial) {
+  const updates = {};
+  if (partial?.api_key != null) {
+    if (typeof partial.api_key !== "string")
+      throw new Error("api_key 需为字符串");
+    updates.api_key = partial.api_key.trim() || null;
+  }
+  if (partial?.base_url != null) {
+    const u = String(partial.base_url).trim().replace(/\/+$/, "");
+    if (!/^https?:\/\/.+/.test(u)) throw new Error("base_url 需为 http(s) 地址");
+    updates.base_url = u;
+  }
+  if (partial?.model != null) {
+    const m = String(partial.model).trim();
+    if (!m) throw new Error("model 不能为空");
+    updates.model = m;
+  }
+  if (partial?.temperature !== undefined) {
+    if (partial.temperature === null || partial.temperature === "") {
+      updates.temperature = null; // 不传 temperature，用 API 默认
+    } else {
+      const t = Number(partial.temperature);
+      if (!Number.isFinite(t) || t < 0 || t > 2)
+        throw new Error("temperature 需在 0–2 之间，或留空表示不传");
+      updates.temperature = t;
+    }
+  }
+  for (const key of ["timeout_ms", "stall_ms"]) {
+    if (partial?.[key] == null) continue;
+    const v = Number(partial[key]);
+    if (!Number.isFinite(v) || v < 1000)
+      throw new Error(`${key} 需为 ≥1000 的毫秒数`);
+    updates[key] = Math.round(v);
+  }
+  if (partial?.stream != null) updates.stream = Boolean(partial.stream);
+  if (!Object.keys(updates).length)
+    throw new Error("至少需要提供一个字段：api_key / base_url / model / temperature / timeout_ms / stream / stall_ms");
+  const merged = { ...AI_CONFIG, ...updates };
+  const db = openDb();
+  db.prepare(
+    `INSERT INTO settings (key, value) VALUES ('ai', ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+  ).run(JSON.stringify(merged));
+  Object.assign(AI_CONFIG, merged); // 原地生效，当前进程无需重启
+  return { ...AI_CONFIG };
+}
+
+/**
+ * 一次性迁移：老版本用 FIT_AI_* 环境变量配置 AI，若库中尚无 ai 行而
+ * 环境里存在 FIT_AI_API_KEY，则把它迁入训练库（server.js 入口在
+ * process.loadEnvFile() 之后调用一次）。迁移后环境变量被完全忽略。
+ */
+export function migrateAiEnvToDb() {
+  const key = process.env.FIT_AI_API_KEY;
+  if (!key) return false;
+  const db = openDb();
+  const row = db.prepare(`SELECT value FROM settings WHERE key = 'ai'`).get();
+  if (row) return false; // 库里已有配置，以库为准
+  const num = (name) => {
+    const v = Number(process.env[name]);
+    return Number.isFinite(v) && v > 0 ? Math.round(v) : undefined;
+  };
+  const fromEnv = {
+    api_key: key,
+    base_url: process.env.FIT_AI_BASE_URL || undefined,
+    model: process.env.FIT_AI_MODEL || undefined,
+    temperature:
+      process.env.FIT_AI_TEMPERATURE != null
+        ? Number(process.env.FIT_AI_TEMPERATURE)
+        : undefined,
+    timeout_ms: num("FIT_AI_TIMEOUT_MS"),
+    stream:
+      process.env.FIT_AI_STREAM != null
+        ? process.env.FIT_AI_STREAM === "true" || process.env.FIT_AI_STREAM === "1"
+        : undefined,
+    stall_ms: num("FIT_AI_STALL_MS"),
+  };
+  // 清掉 undefined 后复用 setAiConfig 的校验与写库路径
+  const clean = Object.fromEntries(Object.entries(fromEnv).filter(([, v]) => v !== undefined));
+  setAiConfig(clean);
+  return true;
 }
 
 const VALID_CATEGORIES = new Set(["training", "race", "recovery", "leisure"]);

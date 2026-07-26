@@ -7,13 +7,15 @@
  *       GET  /api/overview              仪表盘数据（骑手参数/月汇总/趋势/训练清单/AI 配置状态）
  *       GET  /api/athlete               当前骑手参数（库值覆盖 settings.js 默认值 + configured 标记）
  *       POST /api/athlete               {ftp_watts?, max_hr?, weight_kg?} 更新骑手参数（写训练库并即时生效）
+ *       GET  /api/ai-config             当前 AI 服务配置（库值覆盖默认值）
+ *       POST /api/ai-config             {api_key?, base_url?, model?, ...} 更新 AI 配置（写训练库并即时生效）
  *       GET  /api/activity?name=x.fit   单次训练完整 summary JSON
  *       GET  /api/records?name=x.fit    逐秒时序（抽稀到 ≤1400 点，供前端画图）
  *       POST /api/upload?filename=x.fit 上传 FIT（原始字节作 body）→ 分析并入库 → 返回 summary
  *       GET  /api/ftp-estimate          基于最近窗口期骑行（功率峰曲线+心率交叉验证）科学估算 FTP
  *       POST /api/ftp-apply             {ftp_w} 把估算 FTP 写入训练库骑手参数并立即生效
  *       POST /api/ai                    AI 报告：{mode:'review'|'plan'|'taper'|'compare', ...}
- *                                       未配置 FIT_AI_API_KEY 时返回提示词供手动复制
+ *                                       未配置 AI 密钥时返回提示词供手动复制
  *
  * 运行：npm run web（默认 http://localhost:3000，PORT 环境变量可改端口）
  * 输出目录用 FIT_OUTPUT_DIR 覆盖（默认 ./output，测试隔离用）。
@@ -40,6 +42,10 @@ import {
   syncAthleteFromDb,
   getAthleteState,
   setAthlete,
+  syncAiConfigFromDb,
+  migrateAiEnvToDb,
+  getAiConfig,
+  setAiConfig,
   setActivityCategory,
   isValidCategory,
 } from "./src/db.js";
@@ -228,6 +234,29 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  // GET /api/ai-config  当前 AI 服务配置（库值覆盖默认值；本地单用户应用，密钥原样返回供编辑）
+  if (req.method === "GET" && url.pathname === "/api/ai-config") {
+    sendJson(res, 200, getAiConfig());
+    return;
+  }
+
+  // POST /api/ai-config  {api_key?, base_url?, model?, ...}  更新 AI 配置（写训练库并即时生效）
+  if (req.method === "POST" && url.pathname === "/api/ai-config") {
+    let body;
+    try {
+      body = JSON.parse((await readBody(req, 1024 * 1024)).toString("utf8"));
+    } catch {
+      return sendJson(res, 400, { error: "请求体需为 JSON" });
+    }
+    try {
+      const config = setAiConfig(body ?? {});
+      sendJson(res, 200, { applied: true, config });
+    } catch (e) {
+      sendJson(res, 400, { error: e.message });
+    }
+    return;
+  }
+
   // POST /api/activity/category {name, category}
   if (req.method === "POST" && url.pathname === "/api/activity/category") {
     let body;
@@ -357,7 +386,7 @@ async function handleApi(req, res, url) {
       return sendJson(res, 400, { error: "请求体需为 JSON" });
     }
     if (!isAiConfigured())
-      return sendJson(res, 400, { error: "未配置 FIT_AI_API_KEY，无法使用追问" });
+      return sendJson(res, 400, { error: "未配置 AI 密钥（设置页可配），无法使用追问" });
     const msgs = body?.messages;
     if (!Array.isArray(msgs) || msgs.length === 0)
       return sendJson(res, 400, { error: "messages 不能为空数组" });
@@ -489,19 +518,23 @@ const isMain =
   process.argv[1] &&
   path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
-  // Node ≥21.7 内置 .env 注入（无需 dotenv）：项目根目录存在 .env 时自动加载。
-  // 放在入口分支里而非模块顶层：测试 import createServer 时不加载真实 .env，
-  // 避免真实 FIT_AI_API_KEY 泄漏进测试进程并改变"未配置"分支行为。
+  // 一次性迁移：老版本用 .env / 环境变量配置 AI（FIT_AI_*）。这里仍尝试加载
+  // .env（存在才注入，Node ≥21.7 内置，无需 dotenv），仅作为迁移数据源——
+  // 库中已有 ai 配置时 migrateAiEnvToDb 直接跳过，迁移完成后 env 被完全忽略。
+  // 放在入口分支里而非模块顶层：测试 import createServer 时不加载真实 .env。
   try {
     process.loadEnvFile?.();
   } catch {
-    // .env 不存在时静默跳过（环境变量仍可直接 export 提供）
+    // .env 不存在时静默跳过
   }
-  // 骑手参数以训练库为准：启动时把库值合并进 ATHLETE（之后 /api/athlete、/api/ftp-apply 原地更新）
+  if (migrateAiEnvToDb()) console.log("已将 FIT_AI_* 环境变量迁移到训练库（之后以设置页为准）");
+  // 骑手参数 / AI 配置以训练库为准：启动时把库值合并进 ATHLETE / AI_CONFIG
+  // （之后 /api/athlete、/api/ftp-apply、/api/ai-config 原地更新）
   syncAthleteFromDb();
+  syncAiConfigFromDb();
   createServer().listen(PORT, () => {
     console.log(`fit-reader Web 界面: http://localhost:${PORT}`);
     if (!isAiConfigured())
-      console.log("提示: 未配置 FIT_AI_API_KEY，AI 报告将退化为复制提示词模式");
+      console.log("提示: 未配置 AI 密钥（设置页可配），AI 报告将退化为复制提示词模式");
   });
 }

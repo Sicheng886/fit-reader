@@ -2,8 +2,9 @@
  * settings.js
  * 全部可调配置集中在这里：骑手参数出厂默认值、分区定义、各分析算法的阈值。
  *
- * 骑手参数（ATHLETE）只是"出厂默认值"：训练库 settings 表存有一份 athlete 配置，
- * 由 Web 设置页（/api/athlete）维护并作为唯一事实来源；库中无配置时才用这里的值。
+ * 骑手参数（ATHLETE）与 AI 服务配置（AI_CONFIG）只是"出厂默认值"：训练库 settings 表
+ * 存有 athlete / ai 两行配置，由 Web 设置页（/api/athlete、/api/ai-config）维护并作为
+ * 唯一事实来源；库中无配置时才用这里的值。
  * 分区定义与算法阈值仍只在本文件调整。
  */
 
@@ -12,6 +13,17 @@ export const ATHLETE = {
   ftp_watts: 106, // 功能阈值功率
   max_hr: 195, // 最大心率
   weight_kg: 60,
+};
+
+// ============ AI 服务出厂默认值（Web 设置页保存后以训练库为准，默认 Kimi） ============
+export const AI_CONFIG = {
+  api_key: null, // API 密钥；为空时 AI 报告退化为"复制提示词"模式
+  base_url: "https://api.moonshot.cn/v1", // OpenAI 兼容接口地址
+  model: "kimi-k2.6", // 模型名
+  temperature: null, // 采样温度；null 表示不传（部分模型只允许特定取值）
+  timeout_ms: 600000, // 总等待超时（复盘报告生成慢，默认 10 分钟）
+  stream: false, // 是否流式输出；部分账号/模型不真正流式吐字，非流式更稳
+  stall_ms: 60000, // 流式空闲超时，每收到一个 chunk 重置
 };
 
 // ============ 功率分区（Coggan 7 区，按 FTP 百分比） ============

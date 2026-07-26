@@ -17,11 +17,12 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "fit-web-test-"));
 process.env.FIT_DB_PATH = path.join(tmp, "test.db");
 process.env.FIT_OUTPUT_DIR = path.join(tmp, "output");
 process.env.FIT_INPUT_DIR = path.join(tmp, "input");
-delete process.env.FIT_AI_API_KEY; // 确保走"未配置→返回提示词"分支
+// 临时库无 ai 配置行 → AI_CONFIG 保持出厂默认（api_key=null），走"未配置→返回提示词"分支
 
 const { buildRideFit } = await import("./make_test_fit.mjs");
 const { createServer } = await import("../server.js");
-const { closeDb, saveAiReport, listAiReports, getAiReport, upsertActivity, getAthleteState, setActivityCategory, getActivitySummary } = await import("../src/db.js");
+const { closeDb, saveAiReport, listAiReports, getAiReport, upsertActivity, getAthleteState, setActivityCategory, getActivitySummary, getAiConfig, migrateAiEnvToDb } = await import("../src/db.js");
+const { AI_CONFIG } = await import("../src/settings.js");
 
 let server, base;
 
@@ -282,4 +283,68 @@ test("FTP 写回接口：越界数值被拒绝", async () => {
     body: JSON.stringify({ ftp_w: 10 }),
   });
   assert.equal(resp.status, 400);
+});
+
+test("AI 配置迁移：老版本 FIT_AI_* 环境变量一次性迁入训练库", () => {
+  // 此刻临时库尚无 ai 行；模拟老版本 env 注入后的进程状态
+  process.env.FIT_AI_API_KEY = "sk-migrated";
+  process.env.FIT_AI_BASE_URL = "https://example.com/v1/";
+  process.env.FIT_AI_MODEL = "old-model";
+  process.env.FIT_AI_STREAM = "true";
+  try {
+    assert.equal(migrateAiEnvToDb(), true);
+    // 已写库并原地生效（base_url 尾部斜杠被规整）
+    assert.equal(AI_CONFIG.api_key, "sk-migrated");
+    assert.equal(AI_CONFIG.base_url, "https://example.com/v1");
+    assert.equal(AI_CONFIG.model, "old-model");
+    assert.equal(AI_CONFIG.stream, true);
+    assert.equal(getAiConfig().configured, true);
+    // 库中已有 ai 行后不再重复迁移
+    process.env.FIT_AI_API_KEY = "sk-other";
+    assert.equal(migrateAiEnvToDb(), false);
+    assert.equal(AI_CONFIG.api_key, "sk-migrated");
+  } finally {
+    delete process.env.FIT_AI_API_KEY;
+    delete process.env.FIT_AI_BASE_URL;
+    delete process.env.FIT_AI_MODEL;
+    delete process.env.FIT_AI_STREAM;
+  }
+});
+
+test("AI 配置接口：查询、校验、更新并即时生效", async () => {
+  const post = (body) =>
+    fetch(base + "/api/ai-config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  // GET 返回当前生效配置（上一个用例迁移进来的值）
+  const g = await getJson("/api/ai-config");
+  assert.equal(g.status, 200);
+  assert.equal(g.data.config.api_key, "sk-migrated");
+  assert.equal(g.data.configured, true);
+  // 非法值 400
+  assert.equal((await post({ base_url: "not-a-url" })).status, 400);
+  assert.equal((await post({ model: "  " })).status, 400);
+  assert.equal((await post({ temperature: 9 })).status, 400);
+  assert.equal((await post({ timeout_ms: 100 })).status, 400);
+  assert.equal((await post({})).status, 400);
+  // 合法部分更新：改密钥与模型，其余保留
+  const r = await post({ api_key: "sk-new", model: "kimi-k2.6" });
+  assert.equal(r.status, 200);
+  const d = await r.json();
+  assert.equal(d.config.api_key, "sk-new");
+  assert.equal(d.config.model, "kimi-k2.6");
+  assert.equal(d.config.base_url, "https://example.com/v1"); // 未给的字段保留
+  // 进程内即时生效：概览 ai 状态与 isAiConfigured 视角一致
+  const ov = await getJson("/api/overview");
+  assert.equal(ov.data.ai.configured, true);
+  assert.equal(ov.data.ai.model, "kimi-k2.6");
+  // 清空密钥 → 退回未配置（复制提示词模式）
+  const r2 = await post({ api_key: "" });
+  assert.equal(r2.status, 200);
+  assert.equal((await r2.json()).config.api_key, null);
+  assert.equal(getAiConfig().configured, false);
+  const ov2 = await getJson("/api/overview");
+  assert.equal(ov2.data.ai.configured, false);
 });

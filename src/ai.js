@@ -3,48 +3,34 @@
  * AI API 客户端（P4）：把 prompts.js 拼好的提示词直接发给 OpenAI 兼容的
  * chat/completions 接口（Kimi / OpenAI / DeepSeek 等均适用），返回 Markdown 报告。
  *
- * 通过环境变量配置（无密钥时代码路径不会被触发，Web 界面会退化为"复制提示词"模式）：
- *   FIT_AI_API_KEY     API 密钥（必填，未设置则 isAiConfigured() = false）
- *   FIT_AI_BASE_URL    接口地址，默认 https://api.moonshot.cn/v1（Kimi）
- *   FIT_AI_MODEL       模型名，默认 moonshot-v1-32k
- *   FIT_AI_TEMPERATURE 采样温度（可选；缺省不传用 API 默认）
- *   FIT_AI_TIMEOUT_MS  总等待超时（毫秒），默认 600000（10 分钟；复盘报告生成慢，
- *                      曾用全局 fetch 时被 undici 内置 300s body/headers 超时静默掐断，
- *                      表现为"AI 后台分析失败: fetch failed"，故改用 node:http(s) 自行管理超时）
- *   FIT_AI_STREAM      是否启用流式输出，默认 false
- *                      部分模型/账号会先把完整响应生成完毕再一次性下发，
- *                      看起来流式不吐字，这种情况建议用非流式（默认）+ 心跳日志
- *   FIT_AI_STALL_MS    流式时空闲超时（毫秒），默认 60000；每收到一个 chunk 重置
+ * 配置唯一事实来源是训练库 settings 表的 ai 行（Web 设置页维护），
+ * 由 db.js 的 syncAiConfigFromDb() 原地合并进 settings.js 的 AI_CONFIG 导出对象；
+ * 库中无配置时用 AI_CONFIG 出厂默认值（默认 Kimi，api_key 为空 → 退化为
+ * "复制提示词"模式）。本模块不再读取任何环境变量。
  *
- * 配置可写在项目根目录 .env 文件里（server.js 启动时通过 Node 内置
- * process.loadEnvFile() 自动注入，无需 dotenv 依赖）。
+ * 超时完全由本模块基于 node:http(s) 自行管理（AI_CONFIG.timeout_ms / stall_ms）——
+ * 旧实现用全局 fetch 时，undici 内置 300s body/headers 超时会把长报告生成静默掐断，
+ * 表现为"AI 后台分析失败: fetch failed"。
  *
- * 本模块无状态、无第三方依赖（node:http / node:https）。
- * 配置项在调用时惰性读取（.env 注入发生在 server.js 入口，晚于模块加载）。
+ * 本模块无状态（配置经 AI_CONFIG 注入）、无第三方依赖（node:http / node:https）。
  */
 
 import http from "node:http";
 import https from "node:https";
+import { AI_CONFIG } from "./settings.js";
 
 /** 是否已配置 API 密钥（未配置时前端展示提示词供手动复制） */
 export function isAiConfigured() {
-  return Boolean(process.env.FIT_AI_API_KEY);
+  return Boolean(AI_CONFIG.api_key);
 }
 
 /** 当前生效的接口/模型配置（供前端展示，不含密钥） */
 export function aiConfigInfo() {
   return {
-    base_url: process.env.FIT_AI_BASE_URL || "https://api.moonshot.cn/v1",
-    model: process.env.FIT_AI_MODEL || "moonshot-v1-32k",
+    base_url: AI_CONFIG.base_url,
+    model: AI_CONFIG.model,
     configured: isAiConfigured(),
   };
-}
-
-function parseTimeout(name, defaultMs) {
-  const raw = process.env[name];
-  if (!raw) return defaultMs;
-  const n = Number(raw);
-  return Number.isFinite(n) && n > 0 ? n : defaultMs;
 }
 
 /**
@@ -165,11 +151,11 @@ export async function callAI(
   promptOrMessages,
   { onChunk, onHeartbeat, timeoutMs } = {},
 ) {
-  const key = process.env.FIT_AI_API_KEY;
-  if (!key) throw new Error("未配置 FIT_AI_API_KEY 环境变量，无法调用 AI API");
+  const key = AI_CONFIG.api_key;
+  if (!key) throw new Error("未配置 AI 密钥（Web 设置页可配），无法调用 AI API");
   const { base_url, model } = aiConfigInfo();
-  const effectiveTimeoutMs = timeoutMs ?? parseTimeout("FIT_AI_TIMEOUT_MS", 600000);
-  const useStream = process.env.FIT_AI_STREAM === "true" || process.env.FIT_AI_STREAM === "1";
+  const effectiveTimeoutMs = timeoutMs ?? AI_CONFIG.timeout_ms;
+  const useStream = AI_CONFIG.stream;
 
   const messages = Array.isArray(promptOrMessages)
     ? promptOrMessages
@@ -179,8 +165,8 @@ export async function callAI(
     messages,
     stream: useStream,
   };
-  if (process.env.FIT_AI_TEMPERATURE != null)
-    request.temperature = Number(process.env.FIT_AI_TEMPERATURE);
+  if (AI_CONFIG.temperature != null)
+    request.temperature = Number(AI_CONFIG.temperature);
 
   const ctrl = new AbortController();
   const totalTimer = setTimeout(
@@ -190,7 +176,7 @@ export async function callAI(
   // 无论流式/非流式，都每 30 秒回调一次心跳，给调用方一个"还在等"的反馈
   const heartbeat = setInterval(() => onHeartbeat?.(), 30000);
   // 流式空闲超时：每收到一个内容 chunk 重置
-  const stallMs = parseTimeout("FIT_AI_STALL_MS", 60000);
+  const stallMs = AI_CONFIG.stall_ms;
   let stallTimer = null;
   const resetStall = () => {
     clearTimeout(stallTimer);
@@ -212,13 +198,13 @@ export async function callAI(
     if (reason === "stall timeout") {
       throw new Error(
         `AI 流已空闲超过 ${stallMs / 1000} 秒未收到数据。` +
-          `可能是该模型/账号不真正流式输出，建议关闭流式：在 .env 里不写 FIT_AI_STREAM，或设为 false。`,
+          `可能是该模型/账号不真正流式输出，建议在设置页关闭流式。`,
       );
     }
     if (reason === "total timeout" || e.name === "AbortError" || /aborted|timeout/i.test(reason)) {
       throw new Error(
         `AI 请求总时间超过 ${effectiveTimeoutMs / 1000} 秒。` +
-          `若模型确实需要更久，可增大 FIT_AI_TIMEOUT_MS；` +
+          `若模型确实需要更久，可在设置页增大超时时间；` +
           `否则建议检查网络/API 可用性。`,
       );
     }
