@@ -385,3 +385,95 @@ test("AI 配置接口：查询、校验、更新并即时生效", async () => {
   const ov2 = await getJson("/api/overview");
   assert.equal(ov2.data.ai.configured, false);
 });
+
+test("训练备注：保存/合并进 summary/进入复盘提示词/清除与校验", async () => {
+  const post = (body) =>
+    fetch(`${base}/api/activity/note`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  // 保存备注
+  const r = await post({ name: "web_test_ride.fit", note: "体感不错，顺风路况好" });
+  assert.equal(r.status, 200);
+  assert.equal((await r.json()).note, "体感不错，顺风路况好");
+  // 详情接口把 note 合并进 summary.activity
+  const d = await getJson(`/api/activity?name=${encodeURIComponent("web_test_ride.fit")}`);
+  assert.equal(d.data.summary.activity.note, "体感不错，顺风路况好");
+  // 复盘提示词纳入备注并要求结合分析
+  const ai = await (
+    await fetch(base + "/api/ai", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "review", file_name: "web_test_ride.fit" }),
+    })
+  ).json();
+  assert.match(ai.prompt, /体感不错，顺风路况好/);
+  assert.match(ai.prompt, /备注/);
+  // 过长 400、不存在的训练 404
+  assert.equal((await post({ name: "web_test_ride.fit", note: "x".repeat(2001) })).status, 400);
+  assert.equal((await post({ name: "nope.fit", note: "a" })).status, 404);
+  // 纯空白 = 清除备注
+  const clr = await post({ name: "web_test_ride.fit", note: "   " });
+  assert.equal(clr.status, 200);
+  assert.equal((await clr.json()).note, null);
+  const d2 = await getJson(`/api/activity?name=${encodeURIComponent("web_test_ride.fit")}`);
+  assert.equal(d2.data.summary.activity.note, undefined);
+});
+
+test("用户背景与训练目标：设置后进入 AI 提示词，可清空", async () => {
+  const post = (body) =>
+    fetch(base + "/api/profile", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  // 默认未配置
+  const g0 = await getJson("/api/profile");
+  assert.equal(g0.status, 200);
+  assert.equal(g0.data.configured, false);
+  // 非法：超长 400
+  assert.equal((await post({ identity: "x".repeat(101) })).status, 400);
+  assert.equal((await post({ goal: "x".repeat(501) })).status, 400);
+  // 设置身份与目标
+  const r = await post({ identity: "上班族", goal: "半年内 FTP 提升到 250W" });
+  assert.equal(r.status, 200);
+  assert.equal((await r.json()).profile.configured, true);
+  // 部分更新：只改目标，身份保留
+  await post({ goal: "备战 10 月 granfondo" });
+  const g = await getJson("/api/profile");
+  assert.equal(g.data.identity, "上班族");
+  assert.equal(g.data.goal, "备战 10 月 granfondo");
+  // 复盘提示词包含用户背景段
+  const ai = await (
+    await fetch(base + "/api/ai", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "review", file_name: "web_test_ride.fit" }),
+    })
+  ).json();
+  assert.match(ai.prompt, /用户背景与训练目标/);
+  assert.match(ai.prompt, /上班族/);
+  assert.match(ai.prompt, /granfondo/);
+  // 周期规划提示词同样包含
+  const plan = await (
+    await fetch(base + "/api/ai", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "plan" }),
+    })
+  ).json();
+  assert.match(plan.prompt, /用户背景与训练目标/);
+  // 清空 → 未配置，提示词不再含背景段
+  await post({ identity: "", goal: "" });
+  const g2 = await getJson("/api/profile");
+  assert.equal(g2.data.configured, false);
+  const ai2 = await (
+    await fetch(base + "/api/ai", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "review", file_name: "web_test_ride.fit" }),
+    })
+  ).json();
+  assert.doesNotMatch(ai2.prompt, /用户背景与训练目标/);
+});

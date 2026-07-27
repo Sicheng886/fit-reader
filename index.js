@@ -23,6 +23,7 @@ import {
   recentActivities,
   recentFormDaily,
   syncAthleteFromDb,
+  getProfile,
 } from "./src/db.js";
 import {
   buildReviewPrompt,
@@ -986,11 +987,14 @@ function emitPlanPrompt(weeks, outPath) {
     console.log("训练库为空，先分析若干 FIT 文件再生成周期规划提示词。");
     return;
   }
-  const text = buildPlanPrompt({
-    months: monthlySummary(3),
-    formSeries: thinToWeekly(daily),
-    recentActivities: recentActivities(10),
-  });
+  const text = buildPlanPrompt(
+    {
+      months: monthlySummary(3),
+      formSeries: thinToWeekly(daily),
+      recentActivities: recentActivities(10),
+    },
+    getProfile(),
+  );
   emitPrompt(text, outPath);
 }
 
@@ -1010,13 +1014,16 @@ function emitTaperPrompt(raceDate, outPath) {
     (new Date(raceDate + "T00:00:00Z") - new Date(today + "T00:00:00Z")) /
       86400000,
   );
-  const text = buildTaperPrompt({
-    raceDate,
-    daysLeft,
-    form,
-    formSeries: thinToWeekly(recentFormDaily(56)),
-    recentActivities: recentActivities(10),
-  });
+  const text = buildTaperPrompt(
+    {
+      raceDate,
+      daysLeft,
+      form,
+      formSeries: thinToWeekly(recentFormDaily(56)),
+      recentActivities: recentActivities(10),
+    },
+    getProfile(),
+  );
   emitPrompt(text, outPath);
 }
 
@@ -1042,7 +1049,10 @@ async function main() {
 
   // ---- AI 提示词生成子命令（P2） ----
   if (input === "--review") {
-    emitPrompt(buildReviewPrompt(loadSummaryJson(process.argv[3])), process.argv[4]);
+    emitPrompt(
+      buildReviewPrompt(loadSummaryJson(process.argv[3]), getProfile()),
+      process.argv[4],
+    );
     return;
   }
   if (input === "--plan") {
@@ -1056,7 +1066,7 @@ async function main() {
   if (input === "--compare") {
     const a = loadSummaryJson(process.argv[3]);
     const b = loadSummaryJson(process.argv[4]);
-    emitPrompt(buildComparePrompt(a, b), process.argv[5]);
+    emitPrompt(buildComparePrompt(a, b, getProfile()), process.argv[5]);
     return;
   }
 

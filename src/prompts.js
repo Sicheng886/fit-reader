@@ -48,14 +48,32 @@ function jsonBlock(obj) {
   return "```json\n" + JSON.stringify(obj, null, 2) + "\n```";
 }
 
-/** 统一拼装：角色 + 口径 + 各数据段 + 问题清单 */
-function assemble(dataSections, questions) {
+/** 统一拼装：角色 + 口径 + 用户背景（可选）+ 各数据段 + 问题清单 */
+function assemble(dataSections, questions, profile) {
   return [
     ROLE,
     buildMetricGlossary(),
-    ...dataSections,
+    ...[buildProfileSection(profile), ...dataSections].filter(Boolean),
     `## 请回答\n\n${questions.map((q, i) => `${i + 1}. ${q}`).join("\n")}`,
   ].join("\n\n");
+}
+
+/**
+ * 用户背景与训练目标段（设置页维护，存训练库 settings 表 profile 行）。
+ * 未配置或两字段皆空时返回 null（不产生该段）。
+ */
+export function buildProfileSection(profile) {
+  if (!profile) return null;
+  const identity = String(profile.identity ?? "").trim();
+  const goal = String(profile.goal ?? "").trim();
+  if (!identity && !goal) return null;
+  const lines = [];
+  if (identity) lines.push(`身份：${identity}`);
+  if (goal) lines.push(`训练目标：${goal}`);
+  return (
+    `## 用户背景与训练目标\n\n${lines.join("\n")}\n\n` +
+    `请结合上述身份与目标评估训练安排的可行性与侧重点（如时间预算、目标赛事/能力提升方向）。`
+  );
 }
 
 // ---------------- 提交前数据压缩 ----------------
@@ -135,17 +153,27 @@ const CATEGORY_NAMES = {
 
 /**
  * 单次复盘：传入某次训练的 summary.json 对象。
+ * 若 summary.activity.note 存在（用户在详情页填写的体感/路况备注），提示 AI 纳入考量；
+ * profile 为用户背景与训练目标（可选，来自训练库 settings 表）。
  */
-export function buildReviewPrompt(summary) {
+export function buildReviewPrompt(summary, profile) {
   const cat = summary?.activity?.category ?? "training";
   const catName = CATEGORY_NAMES[cat] ?? "训练";
+  const note = String(summary?.activity?.note ?? "").trim();
   return assemble(
     [
       `## 训练数据（单次骑行汇总）\n\n用户已将本次记录分类为：**${catName}**。请基于该分类进行解读；` +
-        `如果是比赛，请按比赛而非日常训练来评估强度与恢复建议。\n\n${jsonBlock(compactSummaryForPrompt(summary))}`,
+        `如果是比赛，请按比赛而非日常训练来评估强度与恢复建议。` +
+        (note
+          ? `用户还为本次训练填写了备注（见 activity.note 字段，内容为体感/路况等主观信息），请结合备注与客观数据互相印证（例如体感差是否对应心率漂移偏大、路况是否解释了功率波动）。`
+          : "") +
+        `\n\n${jsonBlock(compactSummaryForPrompt(summary))}`,
     ],
     [
       "参考用户标记的分类，判断本次记录的训练/比赛属性，并说明依据。",
+      ...(note
+        ? ["结合用户备注（activity.note）解读本次训练：主观感受与客观数据是否一致？有何线索？"]
+        : []),
       "评估功率与心率的强度分布是否合理：对该训练类型而言，各区时间占比是否符合预期？",
       "评估心率漂移（有氧解耦）：数值说明什么？对有氧基础训练有何指示？",
       "如有间歇组（interval_set）或爬坡段（climbs）：完成质量如何（功率达成度、衰减情况）？",
@@ -153,14 +181,16 @@ export function buildReviewPrompt(summary) {
       "如 anomalies / data_quality 有异常标注，说明可能原因及数据可信度影响。",
       "给出 2-3 条下次同类训练的改进建议。",
     ],
+    profile,
   );
 }
 
 /**
  * 周期规划：基于月汇总 + 逐周 CTL/ATL/TSB 走势 + 近期训练清单。
  * @param {{ months: object[], formSeries: object[], recentActivities: object[] }} data
+ * @param {object} [profile] 用户背景与训练目标（可选）
  */
-export function buildPlanPrompt({ months, formSeries, recentActivities }) {
+export function buildPlanPrompt({ months, formSeries, recentActivities }, profile) {
   return assemble(
     [
       `## 逐月训练汇总\n\n${jsonBlock(months)}`,
@@ -174,20 +204,19 @@ export function buildPlanPrompt({ months, formSeries, recentActivities }) {
       "下一周应安排什么强度结构？请给出逐日训练建议（类型、时长、目标功率区间或 %FTP）。",
       "中期（4-8 周）应侧重什么能力短板？依据峰功率曲线或间歇数据说明。",
     ],
+    profile,
   );
 }
 
 /**
  * 赛前调整（减量 taper）。
  * @param {{ raceDate: string, daysLeft: number, form: object, formSeries: object[], recentActivities: object[] }} data
+ * @param {object} [profile] 用户背景与训练目标（可选）
  */
-export function buildTaperPrompt({
-  raceDate,
-  daysLeft,
-  form,
-  formSeries,
-  recentActivities,
-}) {
+export function buildTaperPrompt(
+  { raceDate, daysLeft, form, formSeries, recentActivities },
+  profile,
+) {
   return assemble(
     [
       `## 比赛信息\n\n比赛日期：${raceDate}（距今 ${daysLeft} 天）`,
@@ -202,13 +231,15 @@ export function buildTaperPrompt({
       "赛前最后 48 小时的具体安排建议（含预热/ opener 训练）。",
       "指出当前数据中的风险点（如疲劳过深、CTL 太低、近期训练结构问题）。",
     ],
+    profile,
   );
 }
 
 /**
  * 两次训练对比：传入两个 summary.json 对象。
+ * profile 为用户背景与训练目标（可选，来自训练库 settings 表）。
  */
-export function buildComparePrompt(summaryA, summaryB) {
+export function buildComparePrompt(summaryA, summaryB, profile) {
   return assemble(
     [
       `## 训练 A（${summaryA.activity?.date ?? "未知日期"}）\n\n${jsonBlock(compactSummaryForPrompt(summaryA))}`,
@@ -222,6 +253,7 @@ export function buildComparePrompt(summaryA, summaryB) {
       "综合判断：从 A 到 B 是进步、退步还是持平？给出证据。",
       "基于对比结果，给出下一阶段的训练重点建议。",
     ],
+    profile,
   );
 }
 

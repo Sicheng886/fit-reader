@@ -10,6 +10,10 @@
  *       GET  /api/ai-config             当前 AI 服务配置（库值覆盖默认值）
  *       POST /api/ai-config             {api_key?, base_url?, model?, ...} 更新 AI 配置（写训练库并即时生效）
  *       GET  /api/activity?name=x.fit   单次训练完整 summary JSON
+ *       POST /api/activity/category     {name, category} 标记训练分类（训练/比赛/恢复/休闲）
+ *       POST /api/activity/note         {name, note} 保存训练备注（体感/路况等，AI 复盘纳入考量）
+ *       GET  /api/profile               用户背景与训练目标（identity / goal / configured）
+ *       POST /api/profile               {identity?, goal?} 更新用户背景与训练目标（写训练库，AI 报告纳入考量）
  *       GET  /api/records?name=x.fit    逐秒时序（抽稀到 ≤1400 点，供前端画图）
  *       POST /api/upload?filename=x.fit 上传 FIT（原始字节作 body）→ 分析并入库 → 返回 summary
  *       GET  /api/ftp-estimate          基于最近窗口期骑行（功率峰曲线+心率交叉验证）科学估算 FTP
@@ -50,6 +54,9 @@ import {
   setAiConfig,
   setActivityCategory,
   isValidCategory,
+  setActivityNote,
+  getProfile,
+  setProfile,
 } from "./src/db.js";
 import {
   buildReviewPrompt,
@@ -151,20 +158,24 @@ function loadRecords(fileName, maxPoints = 1400) {
 /** 组装 AI 提示词（复用 P2 模板），返回 { prompt } 或抛出带 message 的错误 */
 function buildPromptForMode(body) {
   const mode = body?.mode;
+  const profile = getProfile(); // 用户背景与训练目标，四个场景统一纳入考量
   if (mode === "review") {
     const name = safeName(body.file_name);
     const summary = name && getActivitySummary(name);
     if (!summary) throw new Error(`训练库中找不到: ${body.file_name ?? "(未提供)"}`);
-    return buildReviewPrompt(summary);
+    return buildReviewPrompt(summary, profile);
   }
   if (mode === "plan") {
     const daily = recentFormDaily(56);
     if (!daily.length) throw new Error("训练库为空");
-    return buildPlanPrompt({
-      months: monthlySummary(3),
-      formSeries: thinToWeekly(daily),
-      recentActivities: recentActivities(10),
-    });
+    return buildPlanPrompt(
+      {
+        months: monthlySummary(3),
+        formSeries: thinToWeekly(daily),
+        recentActivities: recentActivities(10),
+      },
+      profile,
+    );
   }
   if (mode === "taper") {
     const raceDate = body.race_date;
@@ -176,13 +187,16 @@ function buildPromptForMode(body) {
     const daysLeft = Math.round(
       (new Date(raceDate + "T00:00:00Z") - new Date(today + "T00:00:00Z")) / 86400000,
     );
-    return buildTaperPrompt({
-      raceDate,
-      daysLeft,
-      form,
-      formSeries: thinToWeekly(recentFormDaily(56)),
-      recentActivities: recentActivities(10),
-    });
+    return buildTaperPrompt(
+      {
+        raceDate,
+        daysLeft,
+        form,
+        formSeries: thinToWeekly(recentFormDaily(56)),
+        recentActivities: recentActivities(10),
+      },
+      profile,
+    );
   }
   if (mode === "compare") {
     const a = safeName(body.file_name);
@@ -190,7 +204,7 @@ function buildPromptForMode(body) {
     const sa = a && getActivitySummary(a);
     const sb = b && getActivitySummary(b);
     if (!sa || !sb) throw new Error("对比训练在训练库中找不到");
-    return buildComparePrompt(sa, sb);
+    return buildComparePrompt(sa, sb, profile);
   }
   throw new Error(`未知 mode: ${mode}`);
 }
@@ -276,6 +290,48 @@ async function handleApi(req, res, url) {
       sendJson(res, 200, { ok: true });
     } catch (e) {
       sendJson(res, 404, { error: e.message });
+    }
+    return;
+  }
+
+  // POST /api/activity/note {name, note}  保存训练备注（空串清除），AI 复盘时纳入考量
+  if (req.method === "POST" && url.pathname === "/api/activity/note") {
+    let body;
+    try {
+      body = JSON.parse((await readBody(req, 1024 * 1024)).toString("utf8"));
+    } catch {
+      return sendJson(res, 400, { error: "请求体需为 JSON" });
+    }
+    const name = safeName(body?.name);
+    if (!name) return sendJson(res, 400, { error: "name 参数无效" });
+    try {
+      const r = setActivityNote(name, body?.note ?? "");
+      sendJson(res, 200, r);
+    } catch (e) {
+      const status = e.message === "训练不存在" ? 404 : 400;
+      sendJson(res, status, { error: e.message });
+    }
+    return;
+  }
+
+  // GET /api/profile  当前用户背景与训练目标（identity / goal / configured）
+  if (req.method === "GET" && url.pathname === "/api/profile") {
+    sendJson(res, 200, getProfile());
+    return;
+  }
+
+  // POST /api/profile  {identity?, goal?}  更新用户背景与训练目标（写训练库 settings 表）
+  if (req.method === "POST" && url.pathname === "/api/profile") {
+    let body;
+    try {
+      body = JSON.parse((await readBody(req, 1024 * 1024)).toString("utf8"));
+    } catch {
+      return sendJson(res, 400, { error: "请求体需为 JSON" });
+    }
+    try {
+      sendJson(res, 200, { applied: true, profile: setProfile(body ?? {}) });
+    } catch (e) {
+      sendJson(res, 400, { error: e.message });
     }
     return;
   }
@@ -405,10 +461,11 @@ async function handleApi(req, res, url) {
         .map((m) => ({ role: m.role, content: String(m.content ?? "") }))
         .filter((m) => ["system", "user", "assistant"].includes(m.role));
       if (!messages.length) throw new Error("messages 格式无效");
-      // 以报告内容为主，不塞完整 summary.json；前置一句简洁回答的指令
+      // 以报告内容为主，不塞完整 summary.json；前置简洁回答指令：快问快答，100 字以内
       messages.unshift({
         role: "user",
-        content: "请基于下面的训练分析报告回答后续问题，保持简洁，不要展开原始数据。",
+        content:
+          "请基于下面的训练分析报告回答后续问题。要求：快问快答，每次回答严格控制在 100 字以内，直击要点，不要展开原始数据，不要分点罗列。",
       });
       let chunkCount = 0, charCount = 0, heartbeats = 0;
       const markdown = await callAI(messages, {

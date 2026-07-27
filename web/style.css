@@ -854,6 +854,32 @@ svg.chart .axis-zero { stroke: var(--line); stroke-dasharray: 4 4; }
 }
 .follow-up-input textarea:focus { border-color: var(--volt); }
 
+/* ---------------- 训练备注 / 设置页目标 ---------------- */
+
+.note-form textarea,
+.settings-form textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: 64px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  padding: 10px 12px;
+  border-radius: 4px;
+  outline: none;
+  box-sizing: border-box;
+}
+.note-form textarea:focus,
+.settings-form textarea:focus { border-color: var(--volt); }
+.note-actions {
+  margin-top: 10px;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
 @media (max-width: 860px) {
   /* 顶栏：手机端改为两行（logo / nav） */
   .topbar {

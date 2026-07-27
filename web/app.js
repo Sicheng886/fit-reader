@@ -718,6 +718,16 @@ async function renderActivityDetail(name) {
     ${ftpCallout}
     <div class="metric-grid">${metrics.join("")}</div>
     <div class="panel">
+      <div class="panel-title">训练备注</div>
+      <div class="note-form">
+        <textarea id="actNote" rows="3" maxlength="2000" placeholder="自由记录本次训练的体感、路况、天气、状态等（AI 复盘时会纳入考量）…">${esc(a.note ?? "")}</textarea>
+        <div class="note-actions">
+          <button class="btn sm" id="btnSaveNote"><span>保存备注</span></button>
+          <span id="noteSaved" class="muted" style="display:none">已保存 ✓</span>
+        </div>
+      </div>
+    </div>
+    <div class="panel">
       <div class="panel-title">时序曲线（各系列独立纵轴缩放）</div>
       <div class="chart-legend" id="tsLegend"></div>
       <div class="chart-wrap" id="tsChart"></div>
@@ -771,6 +781,23 @@ async function renderActivityDetail(name) {
     );
   };
   redraw();
+
+  // 训练备注：点击按钮保存（空内容表示清除）
+  const noteInput = $("#actNote");
+  const noteSaved = $("#noteSaved");
+  $("#btnSaveNote")?.addEventListener("click", async () => {
+    noteSaved.style.display = "none";
+    try {
+      await api("/api/activity/note", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, note: noteInput.value }),
+      });
+      noteSaved.style.display = "";
+    } catch (e) {
+      alert(`备注保存失败：${e.message}`);
+    }
+  });
 
   // 训练分类：详情页直接标记
   const catSel = $("#actCategory");
@@ -1091,10 +1118,10 @@ function attachFollowUp(panel, body) {
   const wrap = document.createElement("div");
   wrap.className = "ai-follow-up";
   wrap.innerHTML = `
-    <div class="follow-up-title">继续提问</div>
+    <div class="follow-up-title">继续提问（快问快答，回答 ≤100 字）</div>
     <div class="ai-chat" id="aiChat"></div>
     <div class="follow-up-input">
-      <textarea id="followQuestion" rows="2" placeholder="基于上方报告继续提问…"></textarea>
+      <textarea id="followQuestion" rows="2" placeholder="基于上方报告继续提问，AI 将在 100 字以内作答…"></textarea>
       <button class="btn sm" id="btnFollowAsk"><span>提问</span></button>
     </div>`;
   body.appendChild(wrap);
@@ -1154,9 +1181,10 @@ function renderChatBubble(container, role, content) {
 
 async function renderSettings() {
   app.innerHTML = `<div class="empty loading">加载中…</div>`;
-  const [{ athlete, configured }, { config: ai }] = await Promise.all([
+  const [{ athlete, configured }, { config: ai }, profile] = await Promise.all([
     api("/api/athlete"),
     api("/api/ai-config"),
+    api("/api/profile"),
   ]);
   const banner =
     state.firstRun && !configured
@@ -1181,6 +1209,20 @@ async function renderSettings() {
       <p class="muted" style="margin-top:16px;font-size:12px">
         说明：修改参数只影响之后分析的训练；已归档训练的指标按当时口径保留。
         分区定义与算法阈值（间歇/爬坡识别等）仍在 settings.js 中调整。
+      </p>
+    </div>
+    <div class="panel">
+      <div class="panel-title">身份与训练目标</div>
+      <div class="settings-form">
+        <label>身份（如：上班族 / 运动员 / 学生 / 自由职业）
+          <input type="text" id="setIdentity" maxlength="100" placeholder="例如：上班族，只有早晚和周末能训练" value="${esc(profile.identity ?? "")}">
+        </label>
+        <label>训练目标（想达到什么）
+          <textarea id="setGoal" rows="3" maxlength="500" placeholder="例如：半年内 FTP 提升到 250W；备战 10 月 granfondo 完赛；减脂并保持有氧基础…">${esc(profile.goal ?? "")}</textarea>
+        </label>
+      </div>
+      <p class="muted" style="margin-top:16px;font-size:12px">
+        说明：填写后，AI 复盘/规划等报告会结合你的身份与目标给出更贴合实际的建议；都留空则不纳入。
       </p>
     </div>
     <div class="panel">
@@ -1245,6 +1287,14 @@ async function renderSettings() {
           timeout_ms: Number($("#setAiTimeout").value),
           stall_ms: Number($("#setAiStall").value),
           stream: $("#setAiStream").checked,
+        }),
+      });
+      await api("/api/profile", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          identity: $("#setIdentity").value,
+          goal: $("#setGoal").value,
         }),
       });
       state.firstRun = false;

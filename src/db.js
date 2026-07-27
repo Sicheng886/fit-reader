@@ -4,10 +4,13 @@
  *   - 每次分析后把 summary 入库（按文件名去重，重复分析覆盖更新）
  *   - 基于历史 TSS 计算 CTL / ATL / TSB（体能/疲劳/状态）
  *   - 月汇总、趋势数据与提示词上下文查询（recentActivities / recentFormDaily）
- *   - settings 表：骑手参数（athlete）与 AI 服务配置（ai）持久化，Web 设置页维护；
+ *   - settings 表：骑手参数（athlete）、AI 服务配置（ai）与用户背景/训练目标（profile）
+ *     持久化，Web 设置页维护；
  *     syncAthleteFromDb() / syncAiConfigFromDb() 把库值原地合并进 settings.js 的
  *     ATHLETE / AI_CONFIG 导出对象；migrateAiEnvToDb() 负责老版本 FIT_AI_*
  *     环境变量的一次性迁入（迁移后 env 被完全忽略）
+ *   - activities.note 列：用户在详情页填写的训练备注（体感/路况等），
+ *     getActivitySummary() 合并进 summary.activity.note，AI 复盘提示词纳入考量
  *
  * 数据库文件固定为 ./db/fitness.db（可用环境变量 FIT_DB_PATH 覆盖，供测试隔离），
  * 不存在时自动创建。
@@ -65,6 +68,7 @@ function openDb() {
     );
   `);
   ensureActivityCategoryColumn(_db);
+  ensureActivityNoteColumn(_db);
   ensureAiReportStatusColumn(_db);
   return _db;
 }
@@ -75,6 +79,14 @@ function ensureActivityCategoryColumn(db) {
   if (!cols.some((c) => c.name === "category")) {
     db.exec(`ALTER TABLE activities ADD COLUMN category TEXT DEFAULT 'training'`);
     db.exec(`UPDATE activities SET category = 'training' WHERE category IS NULL`);
+  }
+}
+
+/** 为已存在的数据库迁移增加 activities.note 列（用户自由备注：体感/路况等） */
+function ensureActivityNoteColumn(db) {
+  const cols = db.prepare(`PRAGMA table_info(activities)`).all();
+  if (!cols.some((c) => c.name === "note")) {
+    db.exec(`ALTER TABLE activities ADD COLUMN note TEXT DEFAULT NULL`);
   }
 }
 
@@ -326,6 +338,75 @@ export function getActivityCategory(fileName) {
   return row?.category ?? "training";
 }
 
+// 备注长度上限（自由文本：体感/路况等），防止误贴大段内容撑爆训练库与提示词
+const NOTE_MAX_LEN = 2000;
+
+/**
+ * 更新训练备注（用户自由注释，AI 复盘时纳入考量）。
+ * 传空字符串/纯空白表示清除备注；训练不存在时抛 Error（Web API 直接透传给前端）。
+ */
+export function setActivityNote(fileName, note) {
+  const text = String(note ?? "").trim();
+  if (text.length > NOTE_MAX_LEN) throw new Error(`备注过长（上限 ${NOTE_MAX_LEN} 字）`);
+  const db = openDb();
+  const info = db
+    .prepare(`UPDATE activities SET note = ? WHERE file_name = ?`)
+    .run(text || null, fileName);
+  if (info.changes === 0) throw new Error("训练不存在");
+  return { ok: true, note: text || null };
+}
+
+// ---------------- 用户背景与训练目标（存 settings 表 profile 行，Web 设置页维护） ----------------
+
+// 各字段长度上限：身份一句话、目标一段话
+const PROFILE_LIMITS = { identity: 100, goal: 500 };
+
+/** 当前用户背景与训练目标：{ identity, goal, configured }；未配置时两字段为空字符串 */
+export function getProfile() {
+  const db = openDb();
+  const row = db.prepare(`SELECT value FROM settings WHERE key = 'profile'`).get();
+  let profile = { identity: "", goal: "" };
+  if (row) {
+    try {
+      const p = JSON.parse(row.value);
+      profile = {
+        identity: typeof p.identity === "string" ? p.identity : "",
+        goal: typeof p.goal === "string" ? p.goal : "",
+      };
+    } catch {
+      // 行内容损坏时按未配置返回
+    }
+  }
+  return { ...profile, configured: !!(profile.identity || profile.goal) };
+}
+
+/**
+ * 更新用户背景与训练目标（允许只给部分字段）：校验 → 合并写库。
+ * 两字段都为空时删除 profile 行（视为未配置）。非法值抛 Error（Web API 直接透传）。
+ */
+export function setProfile(partial) {
+  const current = getProfile();
+  const merged = { identity: current.identity, goal: current.goal };
+  for (const key of Object.keys(PROFILE_LIMITS)) {
+    if (partial?.[key] == null) continue;
+    if (typeof partial[key] !== "string") throw new Error(`${key} 需为字符串`);
+    const v = partial[key].trim();
+    if (v.length > PROFILE_LIMITS[key])
+      throw new Error(`${key} 过长（上限 ${PROFILE_LIMITS[key]} 字）`);
+    merged[key] = v;
+  }
+  const db = openDb();
+  if (!merged.identity && !merged.goal) {
+    db.prepare(`DELETE FROM settings WHERE key = 'profile'`).run();
+  } else {
+    db.prepare(
+      `INSERT INTO settings (key, value) VALUES ('profile', ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+    ).run(JSON.stringify(merged));
+  }
+  return { ...merged, configured: !!(merged.identity || merged.goal) };
+}
+
 /** 保存 AI 分析报告；每个 mode 仅保留最近 30 条 */
 export function saveAiReport(mode, context, prompt, markdown) {
   const db = openDb();
@@ -568,13 +649,16 @@ export function listActivities(n = 200) {
 export function getActivitySummary(fileName) {
   const db = openDb();
   const row = db
-    .prepare(`SELECT summary_json, category FROM activities WHERE file_name = ?`)
+    .prepare(`SELECT summary_json, category, note FROM activities WHERE file_name = ?`)
     .get(fileName);
   if (!row) return null;
   try {
     const summary = JSON.parse(row.summary_json);
     if (summary?.activity && row.category) {
       summary.activity.category = row.category;
+    }
+    if (summary?.activity && row.note) {
+      summary.activity.note = row.note; // 用户备注（体感/路况等），AI 复盘时纳入考量
     }
     return summary;
   } catch {
