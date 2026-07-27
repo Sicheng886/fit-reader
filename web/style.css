@@ -651,6 +651,28 @@ svg.chart .axis-zero { stroke: var(--line); stroke-dasharray: 4 4; }
   margin: 10px 0;
 }
 
+/* AI 报告中的 Markdown 表格：加边框、表头高亮 */
+.ai-result table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 12px 0;
+  font-size: 13px;
+  border: 1px solid var(--line);
+}
+.ai-result th, .ai-result td {
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+.ai-result th {
+  background: var(--bg-soft);
+  color: var(--text);
+  font-weight: 700;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+}
+.ai-result tr:nth-child(even) { background: rgba(255, 255, 255, 0.02); }
 .prompt-box {
   background: var(--bg-soft);
   border: 1px solid var(--line-soft);

@@ -73,6 +73,23 @@ const num = (v, d = 0) =>
 const trunc = (s, n = 30) =>
   s == null ? "" : s.length > n ? s.slice(0, n - 1) + "…" : s;
 
+/** 将 SQLite UTC 时间字符串（YYYY-MM-DD HH:MM:SS）转换为本地时区显示 */
+function fmtLocalDateTime(utcStr) {
+  if (!utcStr) return "-";
+  const d = new Date(`${utcStr}Z`);
+  if (Number.isNaN(d.getTime())) return utcStr;
+  return d.toLocaleString("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+    timeZoneName: "short",
+  });
+}
+
 // 分区配色（运动风渐变：灰→蓝→绿→荧光黄→橙→红）
 const ZONE_COLORS = {
   Z1: "#5b6670", Z2: "#4aa3ff", Z3: "#3ddc97", Z4: "#d7ff3f",
@@ -321,7 +338,7 @@ async function loadReportList(container, mode = "all") {
             ? `<button class="btn ghost" data-id="${r.id}"><span>查看原因</span></button>`
             : `<button class="btn ghost" data-id="${r.id}"><span>加载</span></button>`;
       return `<tr>
-        <td>${r.created_at}</td>
+        <td>${fmtLocalDateTime(r.created_at)}</td>
         <td>${MODE_LABEL[r.mode] ?? r.mode}</td>
         <td>${esc(r.file_name ?? extra ?? "-")}</td>
         <td>${statusBadge}</td>
