@@ -63,6 +63,7 @@ import {
   buildPlanPrompt,
   buildTaperPrompt,
   buildComparePrompt,
+  compactSummaryForPrompt,
   thinToWeekly,
 } from "./src/prompts.js";
 import { callAI, isAiConfigured, aiConfigInfo } from "./src/ai.js";
@@ -461,12 +462,21 @@ async function handleApi(req, res, url) {
         .map((m) => ({ role: m.role, content: String(m.content ?? "") }))
         .filter((m) => ["system", "user", "assistant"].includes(m.role));
       if (!messages.length) throw new Error("messages 格式无效");
-      // 以报告内容为主，不塞完整 summary.json；前置简洁回答指令：快问快答，100 字以内
-      messages.unshift({
-        role: "user",
-        content:
-          "请基于下面的训练分析报告回答后续问题。要求：快问快答，每次回答严格控制在 100 字以内，直击要点，不要展开原始数据，不要分点罗列。",
-      });
+      // 以报告内容为主；前置回答指令：200 字以内、结合本次训练的具体数据细节指导。
+      // 追问会话本身只带报告 Markdown，这里按 file_name 把压缩后的训练数据一并附上，
+      // 否则 AI 只能引用报告里出现的数字，无法回答报告未覆盖的细节问题。
+      let instruction =
+        "请基于下面的训练分析报告与训练数据回答后续问题。要求：每次回答控制在 200 字以内；" +
+        "必须引用本次训练中的具体数据细节（如 NP/IF、分区占比、心率漂移、峰功率、备注等）给出针对性指导，避免泛泛而谈；不要分点罗列。";
+      const fname = safeName(body?.file_name);
+      const fsummary = fname ? getActivitySummary(fname) : null;
+      if (fsummary) {
+        instruction +=
+          "\n\n本次训练数据（供引用具体细节）：\n```json\n" +
+          JSON.stringify(compactSummaryForPrompt(fsummary)) +
+          "\n```";
+      }
+      messages.unshift({ role: "user", content: instruction });
       let chunkCount = 0, charCount = 0, heartbeats = 0;
       const markdown = await callAI(messages, {
         onChunk: (delta) => {

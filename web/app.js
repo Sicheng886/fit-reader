@@ -1118,10 +1118,10 @@ function attachFollowUp(panel, body) {
   const wrap = document.createElement("div");
   wrap.className = "ai-follow-up";
   wrap.innerHTML = `
-    <div class="follow-up-title">继续提问（快问快答，回答 ≤100 字）</div>
+    <div class="follow-up-title">继续提问（快问快答，回答 ≤200 字）</div>
     <div class="ai-chat" id="aiChat"></div>
     <div class="follow-up-input">
-      <textarea id="followQuestion" rows="2" placeholder="基于上方报告继续提问，AI 将在 100 字以内作答…"></textarea>
+      <textarea id="followQuestion" rows="2" placeholder="基于上方报告继续提问，AI 将结合本次训练的具体数据在 200 字以内作答…"></textarea>
       <button class="btn sm" id="btnFollowAsk"><span>提问</span></button>
     </div>`;
   body.appendChild(wrap);
