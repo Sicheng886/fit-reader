@@ -25,6 +25,8 @@
  *       GET  /api/ai/chat?id=           对话详情（含消息；有 pending 时返回 202 快照供轮询）
  *       GET  /api/ai/chats?mode=        对话列表（可选 report_id 找回该报告的追问对话）
  *       DELETE /api/ai/chat?id=         删除整个对话及其全部消息
+ *       GET  /api/ai/memories           全部 AI 记忆（含已被取代的，设置页管理用）
+ *       DELETE /api/ai/memory?id=       删除指定记忆
  *
  * 运行：npm run web（默认 http://localhost:3000，PORT 环境变量可改端口）
  * 输出目录用 FIT_OUTPUT_DIR 覆盖（默认 ./output，测试隔离用）。
@@ -70,6 +72,9 @@ import {
   getAiChat,
   findFollowUpChat,
   deleteAiChat,
+  listMemories,
+  listAllMemories,
+  deleteMemory,
 } from "./src/db.js";
 import {
   buildReviewPrompt,
@@ -78,6 +83,7 @@ import {
   buildComparePrompt,
   buildAgenticSection,
   buildChatInstruction,
+  buildMemorySection,
   buildMetricGlossary,
   buildProfileSection,
   compactSummaryForPrompt,
@@ -146,10 +152,12 @@ function readBody(req, limitBytes = 64 * 1024 * 1024) {
  * AI 调用统一入口：agentic 开启（AI_CONFIG.agentic，默认开）时走 runAgentLoop
  * 并挂训练库查询工具（function calling），工具调用与降级记服务日志；
  * 关闭时维持原单轮 callAI（含流式设置）。
+ * source 为场景标记（review/plan/taper/compare/follow_up/chat），透传给
+ * save_memory 工具写入 ai_memories.source。
  */
-function callAiMaybeAgentic(messages, { onChunk, onHeartbeat } = {}) {
+function callAiMaybeAgentic(messages, { onChunk, onHeartbeat, source } = {}) {
   if (AI_CONFIG.agentic !== false) {
-    return runAgentLoop(messages, TOOL_DEFS, executeTool, {
+    return runAgentLoop(messages, TOOL_DEFS, (name, args) => executeTool(name, args, { source }), {
       onHeartbeat,
       onToolCall: (name, args, result) => {
         const chars = typeof result === "string" ? result.length : 0;
@@ -218,8 +226,9 @@ function buildPromptForMode(body) {
 
 /**
  * 拼装对话系统段（每轮后台生成时按当前状态重新生成，历史消息只带正文）：
- * - follow_up：快答指令 + 关联报告正文 + 关联训练压缩数据 + 工具指引；
- * - chat：教练角色 + 指标口径 + 用户背景 + 对话指令 + 工具指引。
+ * - follow_up：快答指令 + 关联报告正文 + 关联训练压缩数据 + 工具指引 + 用户记忆段；
+ * - chat：教练角色 + 指标口径 + 用户背景 + 对话指令 + 工具指引 + 用户记忆段。
+ * 记忆段只在 agentic 模式注入——其中的 save_memory 指引依赖工具调用能力。
  */
 function buildChatSystemSection(chat) {
   const agentic = AI_CONFIG.agentic !== false;
@@ -238,7 +247,11 @@ function buildChatSystemSection(chat) {
         JSON.stringify(compactSummaryForPrompt(summary)) +
         "\n```";
     }
-    if (agentic) s += "\n\n" + buildAgenticSection();
+    if (agentic) {
+      s += "\n\n" + buildAgenticSection();
+      const mem = buildMemorySection(listMemories());
+      if (mem) s += "\n\n" + mem;
+    }
     return s;
   }
   // chat：无报告上下文的直接对话，取数全靠 agentic 工具调用
@@ -248,7 +261,11 @@ function buildChatSystemSection(chat) {
     buildProfileSection(getProfile()),
     buildChatInstruction("chat"),
   ].filter(Boolean);
-  if (agentic) parts.push(buildAgenticSection());
+  if (agentic) {
+    parts.push(buildAgenticSection());
+    const mem = buildMemorySection(listMemories());
+    if (mem) parts.push(mem);
+  }
   return parts.join("\n\n");
 }
 
@@ -460,15 +477,18 @@ async function handleApi(req, res, url) {
     (async () => {
       try {
         let chunkCount = 0, charCount = 0, heartbeats = 0;
-        // agentic 模式：提示词末尾追加工具使用指引（未配置密钥走复制提示词时不含此段——
-        // 复制出去的提示词无法回调本机工具）
-        const finalPrompt =
-          AI_CONFIG.agentic !== false
-            ? prompt + "\n\n" + buildAgenticSection()
-            : prompt;
+        // agentic 模式：提示词末尾追加工具使用指引与用户记忆段（未配置密钥走
+        // 复制提示词时不含这两段——复制出去的提示词无法回调本机工具）
+        let finalPrompt = prompt;
+        if (AI_CONFIG.agentic !== false) {
+          finalPrompt += "\n\n" + buildAgenticSection();
+          const mem = buildMemorySection(listMemories());
+          if (mem) finalPrompt += "\n\n" + mem;
+        }
         const markdown = await callAiMaybeAgentic(
           [{ role: "user", content: finalPrompt }],
           {
+            source: body.mode, // 场景标记：save_memory 写入 ai_memories.source
             onChunk: (delta) => {
               chunkCount++;
               charCount += delta.length;
@@ -554,6 +574,7 @@ async function handleApi(req, res, url) {
         ];
         let heartbeats = 0;
         const markdown = await callAiMaybeAgentic(messages, {
+          source: chat.mode, // 场景标记：save_memory 写入 ai_memories.source
           onHeartbeat: () => {
             heartbeats++;
             console.log(`[AI chat] 仍在生成中...（${heartbeats * 30}s）`);
@@ -610,6 +631,22 @@ async function handleApi(req, res, url) {
     if (!Number.isInteger(id) || id <= 0)
       return sendJson(res, 400, { error: "id 参数无效" });
     if (deleteAiChat(id) === 0) return sendJson(res, 404, { error: "对话不存在" });
+    sendJson(res, 200, { ok: true });
+    return;
+  }
+
+  // GET /api/ai/memories  全部 AI 记忆（含已被取代的，设置页管理用）
+  if (req.method === "GET" && url.pathname === "/api/ai/memories") {
+    sendJson(res, 200, { memories: listAllMemories() });
+    return;
+  }
+
+  // DELETE /api/ai/memory?id=  删除指定记忆（用户可纠正 AI 记错的内容）
+  if (req.method === "DELETE" && url.pathname === "/api/ai/memory") {
+    const id = Number(url.searchParams.get("id"));
+    if (!Number.isInteger(id) || id <= 0)
+      return sendJson(res, 400, { error: "id 参数无效" });
+    if (deleteMemory(id) === 0) return sendJson(res, 404, { error: "记忆不存在" });
     sendJson(res, 200, { ok: true });
     return;
   }

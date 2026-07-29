@@ -23,7 +23,8 @@ process.env.FIT_INPUT_DIR = path.join(tmp, "input");
 
 const { buildRideFit } = await import("./make_test_fit.mjs");
 const { createServer } = await import("../server.js");
-const { closeDb, saveAiReport, createPendingAiReport, updateAiReport, listAiReports, getAiReport, upsertActivity, getAthleteState, setActivityCategory, getActivitySummary, getAiConfig, migrateAiEnvToDb, createAiChat, addAiChatMessage, updateAiChatMessage, touchAiChat, listAiChats, getAiChat, findFollowUpChat, deleteAiChat } = await import("../src/db.js");
+const { closeDb, saveAiReport, createPendingAiReport, updateAiReport, listAiReports, getAiReport, upsertActivity, getAthleteState, setActivityCategory, getActivitySummary, getAiConfig, migrateAiEnvToDb, createAiChat, addAiChatMessage, updateAiChatMessage, touchAiChat, listAiChats, getAiChat, findFollowUpChat, deleteAiChat, saveMemory, listMemories, listAllMemories, deleteMemory } = await import("../src/db.js");
+const { buildMemorySection } = await import("../src/prompts.js");
 const { AI_CONFIG } = await import("../src/settings.js");
 
 let server, base;
@@ -797,6 +798,223 @@ test("AI 追问（mock 服务）：报告正文 + 压缩训练数据进入提示
     assert.match(sys, /复盘报告正文/);
     assert.match(sys, /本次训练数据/);
   } finally {
+    Object.assign(AI_CONFIG, saved);
+    mockAi.close();
+  }
+});
+
+// ---------------- AI 记忆（阶段三） ----------------
+
+test("AI 记忆 db CRUD：校验 / 非法 category 归 general / 取代链 / 删除", () => {
+  // 校验：空内容与超长
+  assert.throws(() => saveMemory({ content: "" }), /不能为空/);
+  assert.throws(() => saveMemory({ content: "x".repeat(501) }), /500/);
+  assert.throws(() => saveMemory({ content: "ok", supersedes_id: 999999 }), /不存在/);
+
+  // 非法 category 归 general
+  const id1 = saveMemory({ content: "用户右膝有旧伤，长时间高扭矩不适", category: "nonsense", source: "chat" });
+  assert.ok(id1 > 0);
+
+  // 取代链：新记忆取代旧记忆，旧记忆标记 superseded_by 且不再注入
+  const id2 = saveMemory({ content: "用户膝盖已康复，可正常高扭矩训练", category: "injury", source: "chat", supersedes_id: id1 });
+  const all = listAllMemories();
+  const m1 = all.find((m) => m.id === id1);
+  const m2 = all.find((m) => m.id === id2);
+  assert.equal(m1.active, false);
+  assert.equal(m1.superseded_by, id2);
+  assert.equal(m1.category, "general"); // 非法 category 已归 general
+  assert.equal(m2.active, true);
+  assert.equal(m2.category, "injury");
+  const active = listMemories();
+  assert.ok(!active.some((m) => m.id === id1), "被取代的记忆不应注入");
+  assert.ok(active.some((m) => m.id === id2));
+
+  // 删除：存在删 1，再删 0
+  assert.equal(deleteMemory(id2), 1);
+  assert.equal(deleteMemory(id2), 0);
+  deleteMemory(id1); // 清理残留，避免影响后续滚动清理测试
+});
+
+test("AI 记忆滚动清理：超过 100 条先删最旧已取代，不足再删最旧有效；注入限 30 条", () => {
+  // 先清掉可能残留的已取代记忆，保证计数可控
+  for (const m of listAllMemories().filter((m) => !m.active)) deleteMemory(m.id);
+
+  // 造 3 条已取代记忆
+  const supersededIds = [];
+  for (let i = 0; i < 3; i++) {
+    const a = saveMemory({ content: `旧事实 ${i}` });
+    saveMemory({ content: `新事实 ${i}`, supersedes_id: a });
+    supersededIds.push(a);
+  }
+  // 补有效记忆使总数超出 100 共 3 条 → 恰好清掉 3 条最旧已取代
+  const nowCount = listAllMemories().length;
+  const need = 100 - nowCount + 3;
+  for (let i = 0; i < need; i++) saveMemory({ content: `有效记忆 ${i}` });
+  let all = listAllMemories();
+  assert.equal(all.length, 100);
+  for (const id of supersededIds)
+    assert.ok(!all.some((m) => m.id === id), "已取代记忆应被优先清理");
+
+  // 已取代耗尽后再溢出 → 删最旧有效记忆
+  const oldestValid = all.map((m) => m.id).slice(-2); // id DESC 末尾两条 = 最旧
+  saveMemory({ content: "溢出 1" });
+  saveMemory({ content: "溢出 2" });
+  all = listAllMemories();
+  assert.equal(all.length, 100);
+  for (const id of oldestValid)
+    assert.ok(!all.some((m) => m.id === id), "已取代不足时应删最旧有效记忆");
+
+  // 注入上限：100 条有效记忆只取最近 30 条
+  assert.equal(listMemories().length, 30);
+  assert.equal(listMemories(5).length, 5);
+});
+
+test("buildMemorySection：空记忆返回空串，非空含日期标注 / 冲突规则 / save_memory 指引", () => {
+  assert.equal(buildMemorySection([]), "");
+  assert.equal(buildMemorySection(null), "");
+  // listMemories 返回 id DESC，段落内应反转为时间正序
+  const s = buildMemorySection([
+    { id: 8, content: "用户目标改到 10 月 granfondo", category: "goal", created_at: "2026-07-02 09:00:00" },
+    { id: 7, content: "用户右膝有旧伤", category: "injury", created_at: "2026-07-01 10:00:00" },
+  ]);
+  assert.match(s, /用户记忆/);
+  assert.match(s, /\[2026-07-01\] \(#7, 伤病\) 用户右膝有旧伤/);
+  assert.match(s, /\[2026-07-02\] \(#8, 目标\)/);
+  assert.ok(s.indexOf("#7") < s.indexOf("#8"), "应按日期正序");
+  assert.match(s, /最新者为准/);
+  assert.match(s, /save_memory/);
+  assert.match(s, /supersedes_id/);
+});
+
+test("AI 记忆 e2e：save_memory 工具入库带 source，memories 接口与删除", async () => {
+  // mock chat/completions：首轮返回 save_memory tool_calls，次轮返回正文
+  const seenBodies = [];
+  const mockAi = http.createServer((req, res) => {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      seenBodies.push(JSON.parse(body));
+      res.setHeader("Content-Type", "application/json");
+      const msg =
+        seenBodies.length === 1
+          ? {
+              content: null,
+              tool_calls: [
+                {
+                  id: "call_m1",
+                  type: "function",
+                  function: {
+                    name: "save_memory",
+                    arguments: JSON.stringify({
+                      content: "用户下周出差只能骑台子",
+                      category: "schedule",
+                    }),
+                  },
+                },
+              ],
+            }
+          : { content: "已记下，出差期间给你安排台子训练" };
+      res.end(JSON.stringify({ choices: [{ message: msg }] }));
+    });
+  });
+  await new Promise((r) => mockAi.listen(0, "127.0.0.1", r));
+  const saved = { ...AI_CONFIG };
+  Object.assign(AI_CONFIG, {
+    api_key: "test-key",
+    base_url: `http://127.0.0.1:${mockAi.address().port}/v1`,
+    stream: false,
+    agentic: true,
+  });
+  let memId = null;
+  try {
+    // 直接对话触发 save_memory（source 应为 chat）
+    const resp = await fetch(base + "/api/ai/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "chat", message: "下周出差只能骑台子，帮我记着" }),
+    });
+    assert.equal(resp.status, 202);
+    const { chat_id } = await resp.json();
+    for (let i = 0; i < 50; i++) {
+      const r = await fetch(`${base}/api/ai/chat?id=${chat_id}`);
+      if (r.status === 200) break;
+      await new Promise((r2) => setTimeout(r2, 100));
+    }
+
+    // 记忆已入库，source/category 正确
+    const mem = (await getJson("/api/ai/memories")).data.memories.find((m) =>
+      /出差只能骑台子/.test(m.content),
+    );
+    assert.ok(mem, "memories 接口应返回新记忆");
+    memId = mem.id;
+    assert.equal(mem.source, "chat");
+    assert.equal(mem.category, "schedule");
+    assert.equal(mem.active, true);
+
+    // 次轮请求：save_memory 结果以 role:"tool" 回填（含 memory_id）
+    const toolMsg = seenBodies[1].messages.at(-1);
+    assert.equal(toolMsg.role, "tool");
+    assert.equal(toolMsg.tool_call_id, "call_m1");
+    assert.match(toolMsg.content, /memory_id/);
+
+    // 删除 → 列表消失；再删 404；非法 id 400
+    const del = await fetch(`${base}/api/ai/memory?id=${memId}`, { method: "DELETE" });
+    assert.equal(del.status, 200);
+    memId = null;
+    assert.ok(
+      !(await getJson("/api/ai/memories")).data.memories.some((m) => m.id === mem.id),
+    );
+    const del2 = await fetch(`${base}/api/ai/memory?id=${mem.id}`, { method: "DELETE" });
+    assert.equal(del2.status, 404);
+    const delBad = await fetch(`${base}/api/ai/memory?id=abc`, { method: "DELETE" });
+    assert.equal(delBad.status, 400);
+  } finally {
+    if (memId != null) deleteMemory(memId);
+    Object.assign(AI_CONFIG, saved);
+    mockAi.close();
+  }
+});
+
+test("AI 报告生成：提示词注入用户记忆段（mock 侧断言请求体）", async () => {
+  const mid = saveMemory({ content: "用户目标是 10 月 granfondo 完赛", category: "goal", source: "chat" });
+  const seenBodies = [];
+  const mockAi = http.createServer((req, res) => {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      seenBodies.push(JSON.parse(body));
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ choices: [{ message: { content: "复盘正文" } }] }));
+    });
+  });
+  await new Promise((r) => mockAi.listen(0, "127.0.0.1", r));
+  const saved = { ...AI_CONFIG };
+  Object.assign(AI_CONFIG, {
+    api_key: "test-key",
+    base_url: `http://127.0.0.1:${mockAi.address().port}/v1`,
+    stream: false,
+    agentic: true,
+  });
+  try {
+    const resp = await fetch(base + "/api/ai", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "review", file_name: "web_test_ride.fit" }),
+    });
+    assert.equal(resp.status, 202);
+    const { report_id } = await resp.json();
+    for (let i = 0; i < 50; i++) {
+      const r = await getJson(`/api/ai/report?id=${report_id}`);
+      if (r.status === 200) break;
+      if (r.data?.status === "failed") assert.fail(`报告生成失败: ${r.data.error}`);
+      await new Promise((r2) => setTimeout(r2, 100));
+    }
+    // 报告提示词末尾含记忆段（日期标注 + 记忆内容）
+    const promptSent = seenBodies[0].messages[0].content;
+    assert.match(promptSent, /用户记忆/);
+    assert.match(promptSent, /granfondo 完赛/);
+  } finally {
+    deleteMemory(mid);
     Object.assign(AI_CONFIG, saved);
     mockAi.close();
   }

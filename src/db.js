@@ -14,6 +14,9 @@
  *   - ai_chats / ai_chat_messages 表：AI 对话持久化（报告追问 follow_up 与
  *     直接对话 chat），assistant 消息沿用 pending/completed/failed 状态机，
  *     每 mode 滚动保留最近 50 个对话（清理时级联删除消息）
+ *   - ai_memories 表：AI 记忆（AI 在交互中记录的用户个人事实，带时间戳与
+ *     取代链 superseded_by——同主题新事实覆盖旧事实；库中最多 100 条滚动清理，
+ *     注入提示词取最近 30 条有效记忆；用户可在设置页删除）
  *
  * 数据库文件固定为 ./db/fitness.db（可用环境变量 FIT_DB_PATH 覆盖，供测试隔离），
  * 不存在时自动创建。
@@ -91,6 +94,15 @@ function openDb() {
       created_at TEXT DEFAULT (datetime('now'))
     );
     CREATE INDEX IF NOT EXISTS idx_ai_chat_messages_chat ON ai_chat_messages(chat_id, id);
+
+    CREATE TABLE IF NOT EXISTS ai_memories (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      content TEXT NOT NULL,
+      category TEXT DEFAULT 'general',
+      source TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      superseded_by INTEGER
+    );
   `);
   ensureActivityCategoryColumn(_db);
   ensureActivityNoteColumn(_db);
@@ -668,6 +680,94 @@ export function deleteAiChat(id) {
   db.prepare(`DELETE FROM ai_chat_messages WHERE chat_id = ?`).run(id);
   const info = db.prepare(`DELETE FROM ai_chats WHERE id = ?`).run(id);
   return info.changes;
+}
+
+// ---------------- AI 记忆（ai_memories，带时间戳与取代链） ----------------
+
+// 记忆分类白名单（非法值归入 general）
+const MEMORY_CATEGORIES = new Set(["general", "injury", "schedule", "goal", "preference"]);
+// 单条记忆长度上限（AI 用中文概括的完整陈述）
+const MEMORY_MAX_LEN = 500;
+// 库中最多保留条数：超出先删最旧的已被取代记忆，不足再删最旧有效记忆
+const MEMORY_KEEP = 100;
+
+/**
+ * 保存一条 AI 记忆（用户个人事实：伤病/日程约束/目标变化/明确偏好等），返回 id。
+ * content 必填且 ≤500 字；category 非法归 general；supersedes_id 存在时校验目标
+ * 记忆存在，并把其 superseded_by 置为新 id（被取代的记忆不再注入但保留可追溯）。
+ * 非法输入抛 Error（中文 message，工具层转为 {error} JSON 反馈给 AI）。
+ */
+export function saveMemory({ content, category, source, supersedes_id } = {}) {
+  const text = String(content ?? "").trim();
+  if (!text) throw new Error("记忆内容不能为空");
+  if (text.length > MEMORY_MAX_LEN)
+    throw new Error(`记忆内容过长（上限 ${MEMORY_MAX_LEN} 字）`);
+  const cat = MEMORY_CATEGORIES.has(category) ? category : "general";
+  const db = openDb();
+  let supersedeId = null;
+  if (supersedes_id != null) {
+    supersedeId = Number(supersedes_id);
+    const target = db.prepare(`SELECT id FROM ai_memories WHERE id = ?`).get(supersedeId);
+    if (!target) throw new Error(`要取代的记忆不存在: ${supersedes_id}`);
+  }
+  const info = db
+    .prepare(`INSERT INTO ai_memories (content, category, source) VALUES (?, ?, ?)`)
+    .run(text, cat, source ?? null);
+  const id = Number(info.lastInsertRowid);
+  if (supersedeId != null) {
+    db.prepare(`UPDATE ai_memories SET superseded_by = ? WHERE id = ?`).run(id, supersedeId);
+  }
+  // 滚动清理：最多保留 100 条，先删最旧的已被取代记忆，不足再删最旧有效记忆
+  const total = db.prepare(`SELECT COUNT(*) AS c FROM ai_memories`).get().c;
+  if (total > MEMORY_KEEP) {
+    let excess = total - MEMORY_KEEP;
+    const del = db
+      .prepare(
+        `DELETE FROM ai_memories WHERE id IN (
+           SELECT id FROM ai_memories WHERE superseded_by IS NOT NULL ORDER BY id LIMIT ?
+         )`,
+      )
+      .run(excess);
+    excess -= del.changes;
+    if (excess > 0) {
+      db.prepare(
+        `DELETE FROM ai_memories WHERE id IN (
+           SELECT id FROM ai_memories ORDER BY id LIMIT ?
+         )`,
+      ).run(excess);
+    }
+  }
+  return id;
+}
+
+/** 最近 n 条有效记忆（未被取代，注入提示词用；id DESC，拼装时反转为时间正序） */
+export function listMemories(n = 30) {
+  const db = openDb();
+  return db
+    .prepare(
+      `SELECT id, content, category, source, created_at
+       FROM ai_memories WHERE superseded_by IS NULL
+       ORDER BY id DESC LIMIT ?`,
+    )
+    .all(n);
+}
+
+/** 全部记忆（含已被取代的，管理界面用；id DESC，附 active 有效标记） */
+export function listAllMemories() {
+  const db = openDb();
+  const rows = db
+    .prepare(
+      `SELECT id, content, category, source, created_at, superseded_by
+       FROM ai_memories ORDER BY id DESC`,
+    )
+    .all();
+  return rows.map((r) => ({ ...r, active: r.superseded_by == null }));
+}
+
+/** 删除指定记忆，返回删除条数（0 = 不存在，供 server 判 404） */
+export function deleteMemory(id) {
+  const db = openDb();
+  return db.prepare(`DELETE FROM ai_memories WHERE id = ?`).run(id).changes;
 }
 
 /** 分析结果入库：同一文件名重复分析时覆盖更新 */

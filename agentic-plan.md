@@ -251,7 +251,7 @@ AI 可能记错或过时，用户必须有最终控制权：
 4. 测试：db 对话 CRUD 单测；web 端到端（创建对话 → mock AI 完成 → 轮询取到回答；删除对话；50 个滚动限制）；`npm test` 全绿。
 5. 验证 + `npm version minor` + commit。
 
-### [ ] 阶段三：AI 记忆
+### [x] 阶段三：AI 记忆
 
 1. `src/db.js`：`ai_memories` 表 + `saveMemory` / `listMemories` / `listAllMemories` / `deleteMemory`（含滚动清理与 500 字校验）。
 2. `src/tools.js`：注册 `save_memory` 工具（写 `ai_memories`，带 source 场景标记）。

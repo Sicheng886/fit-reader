@@ -1,8 +1,9 @@
 /**
  * tools.js
  * AI agentic 工具集（function calling）：工具 JSON schema 定义 + 参数校验 + 执行分发。
- * 全部工具为只读查询，内部调用 db.js 既有查询函数与 records.js，不重复实现查询逻辑；
- * save_memory 等写工具在阶段三注册（分发器已预留扩展位）。
+ * 除 save_memory 外全部为只读查询，内部调用 db.js 既有查询函数与 records.js，
+ * 不重复实现查询逻辑；save_memory 只写 ai_memories 表（带 source 场景标记），
+ * 不触碰 activities/settings。
  *
  * 约定：
  * - 所有工具返回 JSON 字符串；业务错误（file_name 不存在、参数非法）返回
@@ -20,6 +21,7 @@ import {
   getAthleteState,
   getProfile,
   cyclingSummariesSince,
+  saveMemory,
 } from "./db.js";
 import { compactSummaryForPrompt } from "./prompts.js";
 import { loadRecords, safeName } from "./records.js";
@@ -125,6 +127,33 @@ export const TOOL_DEFS = [
       parameters: { type: "object", properties: {} },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "save_memory",
+      description:
+        "保存一条关于用户的长期记忆：用户透露影响训练安排的个人事实（伤病/日程约束/目标变化/明确偏好）时使用；训练数据本身已有的事实不要记。",
+      parameters: {
+        type: "object",
+        properties: {
+          content: {
+            type: "string",
+            description: "记忆内容：中文、带主语的完整陈述，≤500 字",
+          },
+          category: {
+            type: "string",
+            enum: ["general", "injury", "schedule", "goal", "preference"],
+            description: "分类：general 通用 / injury 伤病 / schedule 日程 / goal 目标 / preference 偏好",
+          },
+          supersedes_id: {
+            type: "integer",
+            description: "取代某条旧记忆的 id（注入的记忆清单中有 #id 标注），同主题更新时使用",
+          },
+        },
+        required: ["content"],
+      },
+    },
+  },
 ];
 
 // ---------------- 参数校验小工具 ----------------
@@ -213,6 +242,21 @@ function toolEstimateFtp() {
   return toResult(estimateFtpFromHistory(acts, ATHLETE, FTP_ESTIMATION));
 }
 
+/** save_memory：写 ai_memories（唯一写工具）；ctx.source 为场景标记（review/plan/.../chat） */
+function toolSaveMemory(args, ctx) {
+  const id = saveMemory({
+    content: args?.content,
+    category: args?.category,
+    source: ctx?.source ?? null,
+    supersedes_id: args?.supersedes_id,
+  });
+  return toResult({
+    ok: true,
+    memory_id: id,
+    date: new Date().toISOString().slice(0, 10),
+  });
+}
+
 const TOOL_IMPL = {
   list_activities: toolListActivities,
   get_activity_summary: toolGetActivitySummary,
@@ -221,17 +265,19 @@ const TOOL_IMPL = {
   get_monthly_summary: toolGetMonthlySummary,
   get_athlete_profile: toolGetAthleteProfile,
   estimate_ftp: toolEstimateFtp,
+  save_memory: toolSaveMemory,
 };
 
 /**
  * 工具执行分发：未知工具名 / 执行异常均返回 {error} JSON，不抛出。
  * 返回值为 JSON 字符串（直接作为 role:"tool" 消息的 content）。
+ * ctx 为可选上下文（{ source: 场景标记 }），目前仅 save_memory 使用，旧工具忽略。
  */
-export async function executeTool(name, args) {
+export async function executeTool(name, args, ctx) {
   const impl = TOOL_IMPL[name];
   if (!impl) return errResult(`未知工具: ${name}`);
   try {
-    return impl(args ?? {});
+    return impl(args ?? {}, ctx);
   } catch (e) {
     return errResult(`工具执行失败: ${e.message}`);
   }

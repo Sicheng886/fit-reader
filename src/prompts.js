@@ -92,6 +92,38 @@ export function buildChatInstruction(mode) {
   );
 }
 
+/**
+ * 用户记忆段（AI 在交互中记录的用户个人事实，带时间戳）。
+ * 无有效记忆时返回空串（不产生该段）；有记忆时逐条标注日期与 #id，
+ * 写死冲突处理规则（同主题以日期最新者为准）与 save_memory 调用指引。
+ * 仅服务端 agentic 调用注入（CLI 提示词命令不注入——复制出去的提示词无法回调本机）。
+ * memories 为 listMemories() 返回（id DESC），此处反转为时间正序展示。
+ */
+export function buildMemorySection(memories) {
+  if (!memories?.length) return "";
+  const CATEGORY_LABEL = {
+    general: "通用",
+    injury: "伤病",
+    schedule: "日程",
+    goal: "目标",
+    preference: "偏好",
+  };
+  const lines = [...memories].reverse().map((m) => {
+    const date = String(m.created_at ?? "").slice(0, 10);
+    const cat = CATEGORY_LABEL[m.category] ?? m.category ?? "通用";
+    return `- [${date}] (#${m.id}, ${cat}) ${m.content}`;
+  });
+  return `## 用户记忆
+
+以下是你在此前交互中记录的用户相关事实（按日期排列）：
+${lines.join("\n")}
+
+规则：
+1. 同一主题的记忆相互矛盾时，以日期最新者为准；旧记忆仅作变化轨迹参考，不得忽略其存在。
+2. 当用户透露影响训练安排的个人事实（伤病/日程约束/目标变化/明确偏好）时，调用 save_memory 记录；训练数据本身已有的事实不要重复记。
+3. 每条记忆 ≤500 字、用中文、写成带主语的完整陈述；同主题更新时用 supersedes_id 取代旧记忆（id 见上方 #标注）。`;
+}
+
 /** 统一拼装：角色 + 口径 + 用户背景（可选）+ 各数据段 + 问题清单 */
 function assemble(dataSections, questions, profile) {
   return [

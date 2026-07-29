@@ -98,6 +98,23 @@ const ZONE_COLORS = {
 
 const MODE_LABEL = { review: "单次复盘", plan: "周期规划", taper: "赛前减量", compare: "两次对比" };
 
+// AI 记忆的分类与来源场景中文名（设置页记忆列表用）
+const MEM_CATEGORY_LABEL = {
+  general: "通用",
+  injury: "伤病",
+  schedule: "日程",
+  goal: "目标",
+  preference: "偏好",
+};
+const MEM_SOURCE_LABEL = {
+  review: "复盘",
+  plan: "规划",
+  taper: "赛前",
+  compare: "对比",
+  follow_up: "追问",
+  chat: "对话",
+};
+
 // TSB 状态简评（与 db.js formNote 同口径）
 function formNote(tsb) {
   if (tsb >= 15) return "状态很新鲜，适合比赛或高强度测试";
@@ -1481,6 +1498,14 @@ async function renderSettings() {
     <div style="margin-top:16px;display:flex;gap:12px;align-items:center">
       <button class="btn" id="btnSaveSettings"><span>保存</span></button>
       <span class="muted" id="settingsSaved" style="display:none">已保存 ✓</span>
+    </div>
+    <div class="panel">
+      <div class="panel-title">AI 记忆</div>
+      <p class="muted" style="margin-bottom:12px;font-size:12px">
+        AI 在报告与对话中记录的用户相关事实（带日期，同主题以最新为准，已取代的不再注入提示词）。
+        记错了就删，AI 会在后续交互中重记。
+      </p>
+      <div id="memList"><div class="empty loading">加载中…</div></div>
     </div>`;
   $("#btnSaveSettings").addEventListener("click", async () => {
     const btn = $("#btnSaveSettings");
@@ -1524,6 +1549,46 @@ async function renderSettings() {
       alert(`保存失败：${e.message}`);
       btn.disabled = false;
     }
+  });
+
+  // AI 记忆区块：列出全部记忆（含已取代标记）+ 删除（不做编辑——错了就删，AI 会重记）
+  const memList = $("#memList");
+  const renderMemories = async () => {
+    const { memories } = await api("/api/ai/memories");
+    if (!memories.length) {
+      memList.innerHTML = `<div class="empty">暂无记忆</div>`;
+      return;
+    }
+    memList.innerHTML = `<div class="table-wrap"><table class="data-table">
+      <tr><th>日期</th><th>分类</th><th>来源</th><th>内容</th><th>状态</th><th></th></tr>
+      ${memories
+        .map(
+          (m) => `<tr>
+        <td class="mono" style="white-space:nowrap">${esc(String(m.created_at ?? "").slice(0, 10))}</td>
+        <td>${esc(MEM_CATEGORY_LABEL[m.category] ?? m.category ?? "通用")}</td>
+        <td>${esc(MEM_SOURCE_LABEL[m.source] ?? m.source ?? "-")}</td>
+        <td>${esc(m.content)}</td>
+        <td>${
+          m.active
+            ? `<span class="status-badge completed">有效</span>`
+            : `<span class="status-badge failed" title="已被 #${m.superseded_by} 取代">已取代</span>`
+        }</td>
+        <td><button class="btn icon mem-del" data-id="${m.id}" title="删除记忆">×</button></td>
+      </tr>`,
+        )
+        .join("")}
+    </table></div>`;
+    memList.querySelectorAll(".mem-del").forEach((btn) =>
+      btn.addEventListener("click", () => {
+        confirmModal("删除记忆", "删除后 AI 将不再记得该事实。", async () => {
+          await api(`/api/ai/memory?id=${btn.dataset.id}`, { method: "DELETE" });
+          renderMemories();
+        });
+      }),
+    );
+  };
+  renderMemories().catch(() => {
+    memList.innerHTML = `<div class="callout">记忆加载失败</div>`;
   });
 }
 
