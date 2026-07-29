@@ -82,7 +82,7 @@ node index.js input/MAGENE_C506SE_2026-07-17_202219_1273797.fit output/
 ## 版本控制约定（重要）
 
 - 项目使用 **git** 进行版本控制。**每次完成修改后（无论是代码、配置还是文档变更）都必须先提升 `package.json` 中的 `version` 字段，再执行 `git commit`**，并附上清晰描述本次变更内容的中文 commit message。
-- 当前版本：`1.4.0`。版本号遵循语义化版本（SemVer）：`MAJOR.MINOR.PATCH`，bug 修复/小调整升 PATCH，新增功能升 MINOR，破坏性改动升 MAJOR。
+- 当前版本：`1.4.1`。版本号遵循语义化版本（SemVer）：`MAJOR.MINOR.PATCH`，bug 修复/小调整升 PATCH，新增功能升 MINOR，破坏性改动升 MAJOR。
 - 推荐工作流：
   1. 完成修改并跑通 `npm test`。
   2. 运行 `npm version patch|minor|major --no-git-tag-version`（仅修改 `package.json` 与 `package-lock.json`，不自动提交、不打 tag）。

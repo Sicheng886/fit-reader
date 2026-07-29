@@ -1139,7 +1139,10 @@ function attachFollowUp(panel, body) {
   const wrap = document.createElement("div");
   wrap.className = "ai-follow-up";
   wrap.innerHTML = `
-    <div class="follow-up-title">继续提问（快问快答，回答 ≤200 字）</div>
+    <div class="follow-up-title" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+      <span>继续提问（快问快答，回答 ≤200 字）</span>
+      <button class="btn sm ghost" id="btnClearFollowUp" style="display:none"><span>清除追问</span></button>
+    </div>
     <div class="ai-chat" id="aiChat"></div>
     <div class="follow-up-input">
       <textarea id="followQuestion" rows="2" placeholder="基于上方报告继续提问，AI 将结合本次训练的具体数据在 200 字以内作答…"></textarea>
@@ -1150,6 +1153,17 @@ function attachFollowUp(panel, body) {
   const input = $("#followQuestion", wrap);
   const btn = $("#btnFollowAsk", wrap);
   const chat = $("#aiChat", wrap);
+  const clearBtn = $("#btnClearFollowUp", wrap);
+
+  clearBtn.addEventListener("click", () => {
+    if (!state.aiThread?.chat_id) return;
+    confirmModal("清除追问", "将删除该报告下的全部追问消息，不可恢复。", async () => {
+      await api(`/api/ai/chat?id=${state.aiThread.chat_id}`, { method: "DELETE" });
+      state.aiThread.chat_id = null;
+      chat.innerHTML = "";
+      clearBtn.style.display = "none";
+    });
+  });
 
   // 按当前 aiThread 渲染对话快照（轮询回填与首次加载共用；切到别的报告后旧回调自动失效）
   const renderThread = (c) => {
@@ -1164,6 +1178,7 @@ function attachFollowUp(panel, body) {
       .then((r) => {
         if (!r.chat_id || !state.aiThread) return;
         state.aiThread.chat_id = r.chat_id;
+        clearBtn.style.display = "";
         pollAiChat(r.chat_id, renderThread);
       })
       .catch(() => {});
@@ -1188,6 +1203,7 @@ function attachFollowUp(panel, body) {
         }),
       });
       state.aiThread.chat_id = r.chat_id;
+      clearBtn.style.display = "";
       pollAiChat(r.chat_id, renderThread);
     } catch (e) {
       chat.insertAdjacentHTML(
@@ -1495,9 +1511,9 @@ async function renderSettings() {
         说明：密钥保存在本地训练库中，不会上传到其他任何地方；模型名以你的账号可用列表为准。
       </p>
     </div>
-    <div style="margin-top:16px;display:flex;gap:12px;align-items:center">
-      <button class="btn" id="btnSaveSettings"><span>保存</span></button>
+    <div style="margin-top:16px;display:flex;gap:12px;justify-content:flex-end;align-items:center;margin-bottom:24px">
       <span class="muted" id="settingsSaved" style="display:none">已保存 ✓</span>
+      <button class="btn" id="btnSaveSettings"><span>保存</span></button>
     </div>
     <div class="panel">
       <div class="panel-title">AI 记忆</div>
