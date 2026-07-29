@@ -74,7 +74,15 @@ body {
   display: block;
 }
 
-.tabs { display: flex; gap: 4px; height: 100%; align-items: center; }
+.tabs {
+  display: flex;
+  gap: 4px;
+  height: 100%;
+  align-items: center;
+  flex: 1;
+}
+/* 桌面端：左侧品牌+tab，右侧个人信息+三点菜单 */
+.athlete-chip { margin-left: auto; }
 .tab {
   appearance: none;
   background: none;
@@ -1032,7 +1040,21 @@ svg.chart .axis-zero { stroke: var(--line); stroke-dasharray: 4 4; }
   .ai-controls { grid-template-columns: 1fr; }
 
   /* 对话页：列表与消息流上下排列 */
-  .chat-layout { grid-template-columns: 1fr; }
+  .chat-layout {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+  .chat-side { max-height: 220px; overflow-y: auto; }
+  .chat-main { display: flex; flex-direction: column; min-height: 340px; }
+  .chat-main .ai-chat {
+    flex: 1;
+    overflow-y: auto;
+    max-height: calc(100vh - 320px);
+    margin-bottom: 10px;
+  }
+  .follow-up-input { flex-wrap: wrap; }
+  .follow-up-input textarea { min-height: 60px; }
+  .follow-up-input .btn { align-self: flex-end; }
 
   /* 表格紧凑 */
   .data-table { font-size: 12px; }
