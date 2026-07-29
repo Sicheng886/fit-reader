@@ -854,6 +854,53 @@ svg.chart .axis-zero { stroke: var(--line); stroke-dasharray: 4 4; }
 }
 .follow-up-input textarea:focus { border-color: var(--volt); }
 
+/* ---------------- AI 对话页 ---------------- */
+
+.chat-layout {
+  display: grid;
+  grid-template-columns: 300px 1fr;
+  gap: 20px;
+  align-items: start;
+}
+.chat-side { display: flex; flex-direction: column; gap: 12px; }
+.chat-list { display: flex; flex-direction: column; gap: 8px; }
+.chat-row {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: var(--panel);
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  padding: 10px 40px 10px 14px;
+  cursor: pointer;
+  text-decoration: none;
+  color: inherit;
+  transition: border-color 0.15s, background 0.15s;
+}
+.chat-row:hover { border-color: var(--volt); background: var(--panel-2); }
+.chat-row.active { border-color: var(--volt); }
+.chat-row .chat-title {
+  font-weight: 600;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-row .chat-meta { display: flex; gap: 6px; align-items: center; font-size: 11px; }
+.chat-row .chat-del { position: absolute; top: 8px; right: 8px; }
+.chat-main { min-width: 0; }
+.chat-main .ai-chat { margin-bottom: 16px; }
+
+/* pending 占位气泡：呼吸闪烁 */
+.chat-bubble.assistant.pending {
+  animation: chat-pulse 1.4s ease-in-out infinite;
+}
+@keyframes chat-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
 /* ---------------- 训练备注 / 设置页目标 ---------------- */
 
 .note-form textarea,
@@ -945,6 +992,9 @@ svg.chart .axis-zero { stroke: var(--line); stroke-dasharray: 4 4; }
 
   /* AI 卡片 */
   .ai-controls { grid-template-columns: 1fr; }
+
+  /* 对话页：列表与消息流上下排列 */
+  .chat-layout { grid-template-columns: 1fr; }
 
   /* 表格紧凑 */
   .data-table { font-size: 12px; }

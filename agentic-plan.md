@@ -231,7 +231,7 @@ AI 可能记错或过时，用户必须有最终控制权：
 
 ## 9. 分阶段实施步骤
 
-### 阶段一：Agentic 工具调用
+### [x] 阶段一：Agentic 工具调用（已完成，commit 617f4d2）
 
 1. `src/settings.js`：新增 `AGENTIC` 配置块（max_rounds=6、tool_result_max_chars=4000、records_max_points=600 等）；`AI_CONFIG` 增加 `agentic: true` 默认值；`setAiConfig()` 支持该字段更新。
 2. `src/ai.js`：非流式路径解析完整 message（含 `tool_calls`）；新增 `runAgentLoop({messages, tools, executeTool, onHeartbeat})`——循环调用、回填 tool 结果、轮数/超时兜底、模型不支持 tools 时降级单轮。保持依赖注入（不 import db/tools）。
@@ -241,7 +241,7 @@ AI 可能记错或过时，用户必须有最终控制权：
 6. 测试：`test/ai.test.mjs` mock 服务扩展为脚本化多轮（首轮返回 tool_calls、次轮返回正文），验证循环、轮数上限、降级路径；`npm test` 全绿。
 7. 验证 + `npm version minor` + commit（新功能升 MINOR）。
 
-### 阶段二：对话持久化与直接对话区域
+### [x] 阶段二：对话持久化与直接对话区域
 
 1. `src/db.js`：`ai_chats` / `ai_chat_messages` 表 + CRUD（创建对话、追加 user 消息、创建 pending assistant 占位、回填 completed/failed、列表、取详情、删除对话及消息、每 mode 50 个滚动清理）。
 2. `server.js`：新增 `POST /api/ai/chat`、`GET /api/ai/chat`、`GET /api/ai/chats`、`DELETE /api/ai/chat`；后台生成走阶段一的 `runAgentLoop`；删除旧 `/api/ai/follow-up`。
@@ -251,7 +251,7 @@ AI 可能记错或过时，用户必须有最终控制权：
 4. 测试：db 对话 CRUD 单测；web 端到端（创建对话 → mock AI 完成 → 轮询取到回答；删除对话；50 个滚动限制）；`npm test` 全绿。
 5. 验证 + `npm version minor` + commit。
 
-### 阶段三：AI 记忆
+### [ ] 阶段三：AI 记忆
 
 1. `src/db.js`：`ai_memories` 表 + `saveMemory` / `listMemories` / `listAllMemories` / `deleteMemory`（含滚动清理与 500 字校验）。
 2. `src/tools.js`：注册 `save_memory` 工具（写 `ai_memories`，带 source 场景标记）。
@@ -261,7 +261,7 @@ AI 可能记错或过时，用户必须有最终控制权：
 6. 测试：db 记忆 CRUD 单测；web 端到端（memories 接口 + save_memory 工具经 mock AI 触发）；`npm test` 全绿。
 7. 验证 + `npm version minor` + commit。
 
-### 阶段四：收尾
+### [ ] 阶段四：收尾
 
 1. 用 `input/` 真实 FIT 文件 + 真实 AI 配置做端到端人工验证（生成复盘报告观察工具调用日志；直接对话观察取数与记忆保存）。
 2. 更新 README（AI 分析一节）、AGENTS.md（代码结构、测试策略、安全考虑）。

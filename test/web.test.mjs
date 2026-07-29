@@ -1,7 +1,8 @@
 /**
  * web.test.mjs
  * Web 服务（server.js）端到端测试：
- *   合成 FIT → POST /api/upload → 校验概览/详情/时序/AI 提示词接口与路径安全。
+ *   合成 FIT → POST /api/upload → 校验概览/详情/时序/AI 提示词接口与路径安全；
+ *   AI 对话（ai_chats/ai_chat_messages）：db CRUD 直测 + 接口端到端（mock AI + 轮询）。
  *
  * 必须在 import server.js 之前设置 FIT_DB_PATH / FIT_OUTPUT_DIR / FIT_INPUT_DIR：
  * db.js 在模块加载时定库路径，server.js 在加载时定输出目录。
@@ -22,7 +23,7 @@ process.env.FIT_INPUT_DIR = path.join(tmp, "input");
 
 const { buildRideFit } = await import("./make_test_fit.mjs");
 const { createServer } = await import("../server.js");
-const { closeDb, saveAiReport, createPendingAiReport, updateAiReport, listAiReports, getAiReport, upsertActivity, getAthleteState, setActivityCategory, getActivitySummary, getAiConfig, migrateAiEnvToDb } = await import("../src/db.js");
+const { closeDb, saveAiReport, createPendingAiReport, updateAiReport, listAiReports, getAiReport, upsertActivity, getAthleteState, setActivityCategory, getActivitySummary, getAiConfig, migrateAiEnvToDb, createAiChat, addAiChatMessage, updateAiChatMessage, touchAiChat, listAiChats, getAiChat, findFollowUpChat, deleteAiChat } = await import("../src/db.js");
 const { AI_CONFIG } = await import("../src/settings.js");
 
 let server, base;
@@ -549,4 +550,254 @@ test("用户背景与训练目标：设置后进入 AI 提示词，可清空", a
     })
   ).json();
   assert.doesNotMatch(ai2.prompt, /用户背景与训练目标/);
+});
+
+// ---------------- AI 对话（阶段二：持久化 + 直接对话） ----------------
+
+test("AI 对话 db CRUD：状态机 / 列表聚合 / findFollowUpChat / 级联删除", () => {
+  const cid = createAiChat("chat", { title: "测试对话" });
+  assert.ok(cid > 0);
+  addAiChatMessage(cid, "user", "这周状态如何？");
+  const mid = addAiChatMessage(cid, "assistant", "", "pending");
+  touchAiChat(cid);
+
+  // pending 快照 + 列表聚合
+  let chat = getAiChat(cid);
+  assert.equal(chat.messages.length, 2);
+  assert.equal(chat.messages[1].status, "pending");
+  let row = listAiChats("chat").find((c) => c.id === cid);
+  assert.equal(row.message_count, 2);
+  assert.equal(row.has_pending, true);
+
+  // pending → completed 回填
+  updateAiChatMessage(mid, { content: "TSB 为正，可以上强度", status: "completed", error: null });
+  chat = getAiChat(cid);
+  assert.equal(chat.messages[1].status, "completed");
+  assert.match(chat.messages[1].content, /TSB/);
+  row = listAiChats("chat").find((c) => c.id === cid);
+  assert.equal(row.has_pending, false);
+
+  // pending → failed 回填
+  const mid2 = addAiChatMessage(cid, "assistant", "", "pending");
+  updateAiChatMessage(mid2, { status: "failed", error: "AI 请求超时" });
+  chat = getAiChat(cid);
+  assert.equal(chat.messages[2].status, "failed");
+  assert.equal(chat.messages[2].error, "AI 请求超时");
+
+  // findFollowUpChat：取该报告最新的 follow_up 对话
+  const fid = createAiChat("follow_up", { report_id: 424242, file_name: "a.fit", title: "追问" });
+  assert.equal(findFollowUpChat(424242), fid);
+  assert.equal(findFollowUpChat(313131), null);
+
+  // 级联删除：对话与消息一起消失；不存在返回 0 / null
+  assert.equal(deleteAiChat(fid), 1);
+  assert.equal(getAiChat(fid), null);
+  assert.equal(deleteAiChat(fid), 0);
+  assert.equal(getAiChat(999999), null);
+});
+
+test("AI 对话滚动清理：每个 mode 仅保留最近 50 个，消息级联删除", () => {
+  const firstIds = [];
+  for (let i = 1; i <= 55; i++) {
+    const id = createAiChat("chat", { title: `滚动 ${i}` });
+    addAiChatMessage(id, "user", `问题 ${i}`);
+    if (i <= 5) firstIds.push(id);
+  }
+  const rows = listAiChats("chat", 100);
+  assert.equal(rows.length, 50);
+  assert.equal(rows[0].title, "滚动 55"); // 最新在前
+  for (const id of firstIds) assert.equal(getAiChat(id), null); // 被挤出的连消息一起删
+});
+
+test("旧 POST /api/ai/follow-up 接口已删除（404）", async () => {
+  const r = await fetch(base + "/api/ai/follow-up", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+  });
+  assert.equal(r.status, 404);
+});
+
+test("AI 对话接口校验：未配置密钥 / mode / message / 对话不存在", async () => {
+  const post = (body) =>
+    fetch(base + "/api/ai/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  const saved = { ...AI_CONFIG };
+  try {
+    // 未配置密钥 → 400（前端提示去设置页配置）
+    AI_CONFIG.api_key = null;
+    const r0 = await post({ mode: "chat", message: "hi" });
+    assert.equal(r0.status, 400);
+    assert.match((await r0.json()).error, /密钥/);
+
+    AI_CONFIG.api_key = "test-key";
+    assert.equal((await post({ mode: "nope", message: "hi" })).status, 400);
+    assert.equal((await post({ mode: "chat", message: "  " })).status, 400);
+    assert.equal((await post({ mode: "chat", message: "x".repeat(2001) })).status, 400);
+    assert.equal((await post({ mode: "chat", chat_id: 999999, message: "hi" })).status, 404);
+    // GET / DELETE 参数校验
+    assert.equal((await getJson("/api/ai/chat?id=abc")).status, 400);
+    assert.equal((await getJson("/api/ai/chat?id=999999")).status, 404);
+    assert.equal((await getJson("/api/ai/chats?mode=nope")).status, 400);
+    const del = await fetch(`${base}/api/ai/chat?id=999999`, { method: "DELETE" });
+    assert.equal(del.status, 404);
+  } finally {
+    Object.assign(AI_CONFIG, saved);
+  }
+});
+
+test("AI 直接对话（mock 服务）：202 → 轮询取回答，系统段与历史消息口径正确", async () => {
+  const seenBodies = [];
+  const mockAi = http.createServer((req, res) => {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      seenBodies.push(JSON.parse(body));
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ choices: [{ message: { content: "建议今天做二区恢复骑 60 分钟" } }] }));
+    });
+  });
+  await new Promise((r) => mockAi.listen(0, "127.0.0.1", r));
+  const saved = { ...AI_CONFIG };
+  Object.assign(AI_CONFIG, {
+    api_key: "test-key",
+    base_url: `http://127.0.0.1:${mockAi.address().port}/v1`,
+    stream: false,
+    agentic: true,
+  });
+  const pollChat = async (id) => {
+    for (let i = 0; i < 50; i++) {
+      const resp = await fetch(`${base}/api/ai/chat?id=${id}`);
+      const data = await resp.json();
+      if (resp.status === 200) return data;
+      if (data.messages?.some((m) => m.status === "failed"))
+        assert.fail(`对话生成失败: ${data.messages.find((m) => m.status === "failed").error}`);
+      await new Promise((r2) => setTimeout(r2, 100));
+    }
+    assert.fail("对话应在 5 秒内完成");
+  };
+  try {
+    // 新建对话 → 202 + pending 占位
+    const resp = await fetch(base + "/api/ai/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "chat", message: "今天该怎么练？" }),
+    });
+    assert.equal(resp.status, 202);
+    const { chat_id, message_id } = await resp.json();
+    assert.ok(chat_id > 0 && message_id > 0);
+
+    const chat = await pollChat(chat_id);
+    assert.equal(chat.title, "今天该怎么练？");
+    assert.equal(chat.messages.length, 2);
+    assert.equal(chat.messages[0].role, "user");
+    assert.equal(chat.messages[1].status, "completed");
+    assert.match(chat.messages[1].content, /二区恢复骑/);
+    assert.ok(chat.messages[1].html, "assistant completed 消息应附 marked html");
+
+    // mock 侧：系统段 = 角色 + 指标口径 + 对话指令 + 工具指引；历史只带 user 正文
+    const msgs = seenBodies[0].messages;
+    assert.match(msgs[0].content, /自行车教练/);
+    assert.match(msgs[0].content, /指标口径/);
+    assert.match(msgs[0].content, /数据查询工具/);
+    assert.equal(msgs.at(-1).role, "user");
+    assert.equal(msgs.at(-1).content, "今天该怎么练？");
+    assert.ok(!msgs.some((m) => m.content === ""), "pending 占位不进入上下文");
+
+    // 继续同一对话：chat_id 复用，历史带上轮问答
+    const resp2 = await fetch(base + "/api/ai/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "chat", chat_id, message: "那明天呢？" }),
+    });
+    assert.equal(resp2.status, 202);
+    const chat2 = await pollChat(chat_id);
+    assert.equal(chat2.messages.length, 4);
+    const msgs2 = seenBodies[1].messages;
+    assert.ok(msgs2.some((m) => m.role === "assistant" && /二区恢复骑/.test(m.content)));
+
+    // 对话列表包含该对话且无 pending
+    const list = await getJson("/api/ai/chats?mode=chat");
+    const row = list.data.chats.find((c) => c.id === chat_id);
+    assert.ok(row);
+    assert.equal(row.has_pending, false);
+    assert.equal(row.message_count, 4);
+
+    // 删除 → 再查 404
+    const del = await fetch(`${base}/api/ai/chat?id=${chat_id}`, { method: "DELETE" });
+    assert.equal(del.status, 200);
+    assert.equal((await getJson(`/api/ai/chat?id=${chat_id}`)).status, 404);
+  } finally {
+    Object.assign(AI_CONFIG, saved);
+    mockAi.close();
+  }
+});
+
+test("AI 追问（mock 服务）：报告正文 + 压缩训练数据进入提示词，report_id 可找回对话", async () => {
+  const reportId = saveAiReport("review", { file_name: "web_test_ride.fit" }, "p", "# 复盘报告正文");
+  const seenBodies = [];
+  const mockAi = http.createServer((req, res) => {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      seenBodies.push(JSON.parse(body));
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ choices: [{ message: { content: "漂移 3% 属正常范围" } }] }));
+    });
+  });
+  await new Promise((r) => mockAi.listen(0, "127.0.0.1", r));
+  const saved = { ...AI_CONFIG };
+  Object.assign(AI_CONFIG, {
+    api_key: "test-key",
+    base_url: `http://127.0.0.1:${mockAi.address().port}/v1`,
+    stream: false,
+    agentic: true,
+  });
+  try {
+    // 该报告还没有追问对话
+    const r0 = await getJson(`/api/ai/chats?mode=follow_up&report_id=${reportId}`);
+    assert.equal(r0.status, 200);
+    assert.equal(r0.data.chat_id, null);
+
+    const resp = await fetch(base + "/api/ai/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        mode: "follow_up",
+        report_id: reportId,
+        file_name: "web_test_ride.fit",
+        message: "心率漂移怎么看？",
+      }),
+    });
+    assert.equal(resp.status, 202);
+    const { chat_id } = await resp.json();
+
+    // report_id 找回既有追问对话
+    const r1 = await getJson(`/api/ai/chats?mode=follow_up&report_id=${reportId}`);
+    assert.equal(r1.data.chat_id, chat_id);
+
+    // 轮询取回答
+    let chat;
+    for (let i = 0; i < 50; i++) {
+      const resp2 = await fetch(`${base}/api/ai/chat?id=${chat_id}`);
+      const data = await resp2.json();
+      if (resp2.status === 200) { chat = data; break; }
+      await new Promise((r2) => setTimeout(r2, 100));
+    }
+    assert.ok(chat, "追问应在 5 秒内完成");
+    assert.match(chat.messages[1].content, /漂移 3%/);
+
+    // mock 侧系统段：≤200 字快答指令 + 工具查询不计字数 + 报告正文 + 压缩训练数据
+    const sys = seenBodies[0].messages[0].content;
+    assert.match(sys, /200 字以内/);
+    assert.match(sys, /工具查询/);
+    assert.match(sys, /复盘报告正文/);
+    assert.match(sys, /本次训练数据/);
+  } finally {
+    Object.assign(AI_CONFIG, saved);
+    mockAi.close();
+  }
 });

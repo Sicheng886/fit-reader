@@ -1,7 +1,7 @@
 /**
  * app.js — fit-reader Web 前端（P4）
  * 零依赖 SPA：hash 路由 + 手写 SVG 图表 + 极简 Markdown 渲染。
- * 视图：概览（负荷仪表盘）/ 训练列表 / 训练详情 / 上传分析 / AI 分析。
+ * 视图：概览（负荷仪表盘）/ 训练列表 / 训练详情 / 上传分析 / AI 分析 / 对话 / 设置。
  */
 
 // ---------------- 工具 ----------------
@@ -113,7 +113,8 @@ const state = {
   overview: null, // /api/overview 缓存
   chartToggles: {}, // 详情页时序图系列开关
   firstRun: false, // 训练库未配置骑手参数（首开引导到设置页）
-  aiThread: null, // 当前 AI 报告追问会话
+  aiThread: null, // 当前 AI 报告追问上下文 { file_name, report_id, chat_id }
+  chatState: { chatId: null, pollTimer: null }, // 对话页：当前对话 id + 轮询定时器
 };
 
 async function loadOverview(force = false) {
@@ -367,7 +368,8 @@ async function renderCachedReport(id) {
     body.innerHTML = `<div class="ai-result">${r.html || renderMarkdownFallback(r.markdown)}</div>`;
     state.aiThread = {
       file_name: r.file_name,
-      messages: [{ role: "assistant", content: r.markdown }],
+      report_id: r.id,
+      chat_id: null,
     };
     attachFollowUp(panel, body);
   } catch (e) {
@@ -842,7 +844,8 @@ async function renderActivityDetail(name) {
           body.innerHTML = `<div class="ai-result">${cached.html}</div>`;
           state.aiThread = {
             file_name: name,
-            messages: [{ role: "assistant", content: cached.markdown }],
+            report_id: cached.id,
+            chat_id: null,
           };
           attachFollowUp(panel, body);
           $("#btnRegenReview").addEventListener("click", () =>
@@ -1084,7 +1087,8 @@ async function runAi(payload, panel, body) {
       body.innerHTML = `<div class="ai-result">${r.html || renderMarkdownFallback(r.markdown)}</div>`;
       state.aiThread = {
         file_name: payload.file_name,
-        messages: [{ role: "assistant", content: r.markdown }],
+        report_id: r.id ?? null,
+        chat_id: null,
       };
       attachFollowUp(panel, body);
       // 生成新报告后刷新历史列表
@@ -1112,7 +1116,7 @@ async function runAi(payload, panel, body) {
   }
 }
 
-/** 在 AI 报告后附加“继续提问”区 */
+/** 在 AI 报告后附加“继续提问”区（追问对话入库持久化：提交后可离开，回来从报告页继续） */
 function attachFollowUp(panel, body) {
   if (!state.aiThread) return;
   const wrap = document.createElement("div");
@@ -1130,27 +1134,49 @@ function attachFollowUp(panel, body) {
   const btn = $("#btnFollowAsk", wrap);
   const chat = $("#aiChat", wrap);
 
+  // 按当前 aiThread 渲染对话快照（轮询回填与首次加载共用；切到别的报告后旧回调自动失效）
+  const renderThread = (c) => {
+    if (!state.aiThread || state.aiThread.chat_id !== c.id) return;
+    chat.innerHTML = chatMessagesHtml(c.messages);
+    chat.lastElementChild?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  };
+
+  // 打开报告时找回该报告的既有追问对话并渲染历史（有 pending 则继续轮询）
+  if (state.aiThread.report_id) {
+    api(`/api/ai/chats?mode=follow_up&report_id=${state.aiThread.report_id}`)
+      .then((r) => {
+        if (!r.chat_id || !state.aiThread) return;
+        state.aiThread.chat_id = r.chat_id;
+        pollAiChat(r.chat_id, renderThread);
+      })
+      .catch(() => {});
+  }
+
   const ask = async () => {
     const q = input.value.trim();
     if (!q) return;
     input.value = "";
-    state.aiThread.messages.push({ role: "user", content: q });
-    renderChatBubble(chat, "user", q);
     btn.disabled = true;
     btn.innerHTML = "<span>思考中…</span>";
     try {
-      const r = await api("/api/ai/follow-up", {
+      const r = await api("/api/ai/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          file_name: state.aiThread.file_name,
-          messages: state.aiThread.messages,
+          mode: "follow_up",
+          chat_id: state.aiThread.chat_id ?? undefined,
+          report_id: state.aiThread.report_id ?? undefined,
+          file_name: state.aiThread.file_name ?? undefined,
+          message: q,
         }),
       });
-      state.aiThread.messages.push({ role: "assistant", content: r.markdown });
-      renderChatBubble(chat, "assistant", r.html || renderMarkdownFallback(r.markdown));
+      state.aiThread.chat_id = r.chat_id;
+      pollAiChat(r.chat_id, renderThread);
     } catch (e) {
-      renderChatBubble(chat, "assistant", `<div class="callout">${esc(e.message)}</div>`);
+      chat.insertAdjacentHTML(
+        "beforeend",
+        `<div class="chat-bubble assistant"><div class="callout">${esc(e.message)}</div></div>`,
+      );
     } finally {
       btn.disabled = false;
       btn.innerHTML = "<span>提问</span>";
@@ -1166,15 +1192,208 @@ function attachFollowUp(panel, body) {
   });
 }
 
-function renderChatBubble(container, role, content) {
+// ---------------- 视图：AI 对话（追问与直接对话共用渲染/轮询机制） ----------------
+
+/** 停止对话轮询（route 入口统一调用，hashchange 即停） */
+function stopChatPolling() {
+  if (state.chatState.pollTimer) {
+    clearTimeout(state.chatState.pollTimer);
+    state.chatState.pollTimer = null;
+  }
+}
+
+/**
+ * 轮询对话直到没有 pending 消息：每次拿到快照（含 202）都调 onSnapshot(chat)，
+ * 服务端返回 202 时 ~1.5s 后继续；出错（对话被删/网络异常）静默停止。
+ */
+function pollAiChat(id, onSnapshot) {
+  stopChatPolling();
+  const tick = async () => {
+    try {
+      const resp = await fetch(`/api/ai/chat?id=${id}`);
+      const chat = await resp.json();
+      if (!resp.ok && resp.status !== 202) return;
+      onSnapshot(chat);
+      if (resp.status === 202) {
+        state.chatState.pollTimer = setTimeout(tick, 1500);
+      }
+    } catch {
+      // 轮询失败静默停止，用户可手动刷新
+    }
+  };
+  tick();
+}
+
+/** 消息数组 → 气泡 HTML（pending 显示占位，failed 显示错误，completed 用服务端渲染的 html） */
+function chatMessagesHtml(messages) {
+  return (messages || [])
+    .map((m) => {
+      if (m.role === "user")
+        return `<div class="chat-bubble user"><p>${esc(m.content)}</p></div>`;
+      if (m.status === "pending")
+        return `<div class="chat-bubble assistant pending"><p class="muted">思考中…</p></div>`;
+      if (m.status === "failed")
+        return `<div class="chat-bubble assistant"><div class="callout">生成失败：${esc(m.error || "未知错误")}</div></div>`;
+      return `<div class="chat-bubble assistant"><div class="ai-result">${m.html || renderMarkdownFallback(m.content)}</div></div>`;
+    })
+    .join("");
+}
+
+/** 确认弹窗（删除对话等破坏性操作用），点确认按钮才执行 onOk */
+function confirmModal(title, text, onOk) {
   const el = document.createElement("div");
-  el.className = `chat-bubble ${role}`;
-  el.innerHTML =
-    role === "user"
-      ? `<p>${esc(content)}</p>`
-      : `<div class="ai-result">${content}</div>`;
-  container.appendChild(el);
-  el.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  el.className = "modal-overlay";
+  el.innerHTML = `
+    <div class="modal">
+      <div class="modal-head">
+        <div class="modal-title">${esc(title)}</div>
+        <button class="modal-close" aria-label="关闭">×</button>
+      </div>
+      <div class="modal-body">
+        <p style="margin:0 0 16px">${esc(text)}</p>
+        <div style="display:flex;gap:10px;justify-content:flex-end">
+          <button class="btn ghost" data-act="cancel"><span>取消</span></button>
+          <button class="btn" data-act="ok"><span>删除</span></button>
+        </div>
+      </div>
+    </div>`;
+  document.body.appendChild(el);
+  const close = () => el.remove();
+  el.querySelector(".modal-close").addEventListener("click", close);
+  el.addEventListener("click", (e) => { if (e.target === el) close(); });
+  el.querySelector('[data-act="cancel"]').addEventListener("click", close);
+  el.querySelector('[data-act="ok"]').addEventListener("click", async () => {
+    close();
+    await onOk();
+  });
+}
+
+function chatRowHtml(c, activeId) {
+  const badge =
+    c.mode === "follow_up" ? `<span class="status-badge completed">追问</span>` : "";
+  const pending = c.has_pending ? `<span class="status-badge pending">生成中…</span>` : "";
+  return `<a class="chat-row ${c.id === activeId ? "active" : ""}" href="#/chat/${c.id}">
+    <span class="chat-title">${esc(c.title || "（无标题）")}</span>
+    <span class="chat-meta">${badge}${pending}<span class="muted">${fmtLocalDateTime(c.updated_at)}</span></span>
+    <button class="btn icon chat-del" data-id="${c.id}" title="删除对话">×</button>
+  </a>`;
+}
+
+/** 对话页：左侧对话列表（含追问），右侧消息流；chatId 为空表示新建对话 */
+async function renderChat(chatId) {
+  app.innerHTML = `<div class="empty loading">加载中…</div>`;
+  const [ov, chatList, fuList] = await Promise.all([
+    loadOverview(),
+    api("/api/ai/chats?mode=chat"),
+    api("/api/ai/chats?mode=follow_up"),
+  ]);
+  const aiInfo = ov.ai || {};
+  const cfgNote = aiInfo.configured
+    ? ""
+    : `<div class="callout">未配置 AI 密钥 — 到「设置」页配置后才能开始对话（历史对话仍可查看）</div>`;
+  const chats = [...(chatList.chats || []), ...(fuList.chats || [])].sort((a, b) =>
+    a.updated_at < b.updated_at ? 1 : -1,
+  );
+  app.innerHTML = `
+    <div class="view-title"><h1>AI 对话</h1><span class="sub">随时提问，AI 可自行查询训练库数据作答</span></div>
+    ${cfgNote}
+    <div class="chat-layout">
+      <div class="chat-side">
+        <button class="btn" id="btnNewChat" style="width:100%"><span>＋ 新建对话</span></button>
+        <div class="chat-list" id="chatList">
+          ${chats.map((c) => chatRowHtml(c, chatId)).join("") || `<div class="empty">暂无对话</div>`}
+        </div>
+      </div>
+      <div class="chat-main" id="chatMain"></div>
+    </div>`;
+  $("#btnNewChat").addEventListener("click", () => {
+    history.replaceState(null, "", "#/chat");
+    renderChatMain(null);
+    $("#chatList")?.querySelectorAll(".chat-row.active").forEach((r) => r.classList.remove("active"));
+  });
+  $("#chatList").querySelectorAll(".chat-del").forEach((btn) =>
+    btn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const id = Number(btn.dataset.id);
+      confirmModal("删除对话", "将删除该对话及其全部消息，不可恢复。", async () => {
+        await api(`/api/ai/chat?id=${id}`, { method: "DELETE" });
+        if (state.chatState.chatId === id) {
+          state.chatState.chatId = null;
+          history.replaceState(null, "", "#/chat");
+        }
+        renderChat(state.chatState.chatId);
+      });
+    }),
+  );
+  renderChatMain(chatId);
+}
+
+/** 对话页右侧：消息流 + 输入框；chatId 非空时拉取快照并轮询 pending */
+function renderChatMain(chatId) {
+  const main = $("#chatMain");
+  if (!main) return;
+  state.chatState.chatId = chatId ?? null;
+  if (!chatId) {
+    stopChatPolling();
+    main.innerHTML = `
+      <div class="ai-chat"><div class="empty">新对话 — 在下方输入第一个问题，AI 会自行查询训练库数据作答</div></div>
+      ${chatInputHtml()}`;
+    bindChatInput(main);
+    return;
+  }
+  main.innerHTML = `<div class="empty loading">加载对话…</div>`;
+  pollAiChat(chatId, (chat) => {
+    if (state.chatState.chatId !== chatId) return; // 已切到别的对话
+    const draft = $("#chatQuestion", main)?.value; // 快照重绘时保留正在输入的草稿
+    main.innerHTML = `
+      <div class="ai-chat">${chatMessagesHtml(chat.messages) || `<div class="empty">暂无消息</div>`}</div>
+      ${chatInputHtml()}`;
+    bindChatInput(main);
+    if (draft) $("#chatQuestion", main).value = draft;
+    main.querySelector(".ai-chat")?.lastElementChild?.scrollIntoView({ block: "nearest" });
+  });
+}
+
+const chatInputHtml = () => `
+  <div class="follow-up-input">
+    <textarea id="chatQuestion" rows="2" placeholder="向 AI 训练顾问提问，例如：这周状态适合上强度吗？"></textarea>
+    <button class="btn sm" id="btnChatAsk"><span>发送</span></button>
+  </div>`;
+
+function bindChatInput(main) {
+  const input = $("#chatQuestion", main);
+  const btn = $("#btnChatAsk", main);
+  if (!input || !btn) return;
+  const ask = async () => {
+    const q = input.value.trim();
+    if (!q) return;
+    btn.disabled = true;
+    try {
+      const r = await api("/api/ai/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mode: "chat",
+          chat_id: state.chatState.chatId ?? undefined,
+          message: q,
+        }),
+      });
+      state.chatState.chatId = r.chat_id;
+      history.replaceState(null, "", `#/chat/${r.chat_id}`);
+      renderChatMain(r.chat_id);
+    } catch (e) {
+      alert(`发送失败：${e.message}`);
+      btn.disabled = false;
+    }
+  };
+  btn.addEventListener("click", ask);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      ask();
+    }
+  });
 }
 
 // ---------------- 视图：设置 ----------------
@@ -1316,6 +1535,7 @@ function setActiveTab(view) {
 }
 
 async function route() {
+  stopChatPolling(); // 切换视图即停止对话轮询（hashchange 触发 route）
   const hash = location.hash || "#/dashboard";
   const [, view, arg] = hash.split("/");
   try {
@@ -1329,6 +1549,7 @@ async function route() {
     else if (view === "activity" && arg) { setActiveTab("activities"); await renderActivityDetail(decodeURIComponent(arg)); }
     else if (view === "upload") { setActiveTab("upload"); renderUpload(); }
     else if (view === "ai") { setActiveTab("ai"); await renderAI(); }
+    else if (view === "chat") { setActiveTab("chat"); await renderChat(arg ? Number(arg) : null); }
     else if (view === "settings") { setActiveTab("settings"); await renderSettings(); }
     else { setActiveTab("dashboard"); await renderDashboard(); }
   } catch (e) {

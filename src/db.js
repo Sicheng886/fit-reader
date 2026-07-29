@@ -11,6 +11,9 @@
  *     环境变量的一次性迁入（迁移后 env 被完全忽略）
  *   - activities.note 列：用户在详情页填写的训练备注（体感/路况等），
  *     getActivitySummary() 合并进 summary.activity.note，AI 复盘提示词纳入考量
+ *   - ai_chats / ai_chat_messages 表：AI 对话持久化（报告追问 follow_up 与
+ *     直接对话 chat），assistant 消息沿用 pending/completed/failed 状态机，
+ *     每 mode 滚动保留最近 50 个对话（清理时级联删除消息）
  *
  * 数据库文件固定为 ./db/fitness.db（可用环境变量 FIT_DB_PATH 覆盖，供测试隔离），
  * 不存在时自动创建。
@@ -66,6 +69,28 @@ function openDb() {
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS ai_chats (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      mode TEXT NOT NULL,
+      report_id INTEGER,
+      file_name TEXT,
+      title TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_ai_chats_mode ON ai_chats(mode, id DESC);
+
+    CREATE TABLE IF NOT EXISTS ai_chat_messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      chat_id INTEGER NOT NULL,
+      role TEXT NOT NULL,
+      content TEXT NOT NULL,
+      status TEXT DEFAULT 'completed',
+      error TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_ai_chat_messages_chat ON ai_chat_messages(chat_id, id);
   `);
   ensureActivityCategoryColumn(_db);
   ensureActivityNoteColumn(_db);
@@ -509,6 +534,140 @@ export function getAiReport(id) {
     error: row.error,
     created_at: row.created_at,
   };
+}
+
+// ---------------- AI 对话（ai_chats / ai_chat_messages，追问与直接对话统一） ----------------
+
+// 每个 mode 滚动保留的对话数上限（沿用 ai_reports 的 id DESC LIMIT 清理模式）
+const AI_CHAT_KEEP = 50;
+
+/**
+ * 创建 AI 对话（mode: follow_up 报告追问 / chat 直接对话），返回 id。
+ * 每个 mode 仅保留最近 50 个对话，超出的旧对话连同其全部消息一起删除。
+ */
+export function createAiChat(mode, { report_id, file_name, title } = {}) {
+  const db = openDb();
+  const info = db
+    .prepare(
+      `INSERT INTO ai_chats (mode, report_id, file_name, title) VALUES (?, ?, ?, ?)`,
+    )
+    .run(mode, report_id ?? null, file_name ?? null, title ?? null);
+  // 滚动清理：先删被挤出对话的消息，再删对话本身（级联）
+  db.prepare(
+    `DELETE FROM ai_chat_messages WHERE chat_id IN (
+       SELECT id FROM ai_chats WHERE mode = ? AND id NOT IN (
+         SELECT id FROM ai_chats WHERE mode = ? ORDER BY id DESC LIMIT ?
+       )
+     )`,
+  ).run(mode, mode, AI_CHAT_KEEP);
+  db.prepare(
+    `DELETE FROM ai_chats
+     WHERE id NOT IN (
+       SELECT id FROM ai_chats WHERE mode = ? ORDER BY id DESC LIMIT ?
+     ) AND mode = ?`,
+  ).run(mode, AI_CHAT_KEEP, mode);
+  return Number(info.lastInsertRowid);
+}
+
+/** 追加一条对话消息（assistant 可用 status='pending' 占位），返回消息 id */
+export function addAiChatMessage(chatId, role, content, status = "completed") {
+  const db = openDb();
+  const info = db
+    .prepare(
+      `INSERT INTO ai_chat_messages (chat_id, role, content, status) VALUES (?, ?, ?, ?)`,
+    )
+    .run(chatId, role, String(content ?? ""), status);
+  return Number(info.lastInsertRowid);
+}
+
+/** 更新对话消息（后台生成成功/失败时回填，COALESCE 模式同 updateAiReport） */
+export function updateAiChatMessage(id, { content, status, error } = {}) {
+  const db = openDb();
+  db.prepare(
+    `UPDATE ai_chat_messages
+     SET content = COALESCE(?, content),
+         status = COALESCE(?, status),
+         error = COALESCE(?, error)
+     WHERE id = ?`,
+  ).run(content ?? null, status ?? null, error ?? null, id);
+}
+
+/** 有新消息时刷新对话的 updated_at（列表按它倒序，最近活跃的对话排前） */
+export function touchAiChat(chatId) {
+  const db = openDb();
+  db.prepare(`UPDATE ai_chats SET updated_at = datetime('now') WHERE id = ?`).run(chatId);
+}
+
+/**
+ * 某 mode 的对话列表（按 updated_at 倒序），附消息条数与是否有 pending 消息的
+ * 聚合字段（供列表态显示"生成中"标记），不含消息正文。
+ */
+export function listAiChats(mode, n = AI_CHAT_KEEP) {
+  const db = openDb();
+  const rows = db
+    .prepare(
+      `SELECT c.id, c.mode, c.report_id, c.file_name, c.title, c.created_at, c.updated_at,
+              (SELECT COUNT(*) FROM ai_chat_messages m WHERE m.chat_id = c.id) AS message_count,
+              EXISTS(SELECT 1 FROM ai_chat_messages m
+                     WHERE m.chat_id = c.id AND m.status = 'pending') AS has_pending
+       FROM ai_chats c WHERE c.mode = ?
+       ORDER BY c.updated_at DESC, c.id DESC LIMIT ?`,
+    )
+    .all(mode, n);
+  return rows.map((r) => ({
+    id: r.id,
+    mode: r.mode,
+    report_id: r.report_id,
+    file_name: r.file_name,
+    title: r.title,
+    message_count: r.message_count,
+    has_pending: !!r.has_pending,
+    created_at: r.created_at,
+    updated_at: r.updated_at,
+  }));
+}
+
+/** 按 id 取对话元信息 + 全部消息（按 id 升序），不存在返回 null */
+export function getAiChat(id) {
+  const db = openDb();
+  const row = db.prepare(`SELECT * FROM ai_chats WHERE id = ?`).get(id);
+  if (!row) return null;
+  const messages = db
+    .prepare(
+      `SELECT id, role, content, status, error, created_at
+       FROM ai_chat_messages WHERE chat_id = ? ORDER BY id`,
+    )
+    .all(id);
+  return {
+    id: row.id,
+    mode: row.mode,
+    report_id: row.report_id,
+    file_name: row.file_name,
+    title: row.title,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    messages,
+  };
+}
+
+/** 该报告最新的 follow_up 对话 id（报告详情页追问"继续既有对话"用），没有返回 null */
+export function findFollowUpChat(reportId) {
+  const db = openDb();
+  const row = db
+    .prepare(
+      `SELECT id FROM ai_chats WHERE mode = 'follow_up' AND report_id = ?
+       ORDER BY id DESC LIMIT 1`,
+    )
+    .get(reportId);
+  return row?.id ?? null;
+}
+
+/** 删除整个对话及其全部消息，返回删除的对话数（0 = 不存在，供 server 判 404） */
+export function deleteAiChat(id) {
+  const db = openDb();
+  db.prepare(`DELETE FROM ai_chat_messages WHERE chat_id = ?`).run(id);
+  const info = db.prepare(`DELETE FROM ai_chats WHERE id = ?`).run(id);
+  return info.changes;
 }
 
 /** 分析结果入库：同一文件名重复分析时覆盖更新 */

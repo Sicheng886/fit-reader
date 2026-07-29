@@ -20,6 +20,11 @@
  *       POST /api/ftp-apply             {ftp_w} 把估算 FTP 写入训练库骑手参数并立即生效
  *       POST /api/ai                    AI 报告：{mode:'review'|'plan'|'taper'|'compare', ...}
  *                                       未配置 AI 密钥时返回提示词供手动复制
+ *       POST /api/ai/chat               AI 对话：{chat_id?, mode:'follow_up'|'chat', message, report_id?, file_name?}
+ *                                       落库 user 消息 + pending 占位 → 202，后台生成回填
+ *       GET  /api/ai/chat?id=           对话详情（含消息；有 pending 时返回 202 快照供轮询）
+ *       GET  /api/ai/chats?mode=        对话列表（可选 report_id 找回该报告的追问对话）
+ *       DELETE /api/ai/chat?id=         删除整个对话及其全部消息
  *
  * 运行：npm run web（默认 http://localhost:3000，PORT 环境变量可改端口）
  * 输出目录用 FIT_OUTPUT_DIR 覆盖（默认 ./output，测试隔离用）。
@@ -57,6 +62,14 @@ import {
   setActivityNote,
   getProfile,
   setProfile,
+  createAiChat,
+  addAiChatMessage,
+  updateAiChatMessage,
+  touchAiChat,
+  listAiChats,
+  getAiChat,
+  findFollowUpChat,
+  deleteAiChat,
 } from "./src/db.js";
 import {
   buildReviewPrompt,
@@ -64,8 +77,12 @@ import {
   buildTaperPrompt,
   buildComparePrompt,
   buildAgenticSection,
+  buildChatInstruction,
+  buildMetricGlossary,
+  buildProfileSection,
   compactSummaryForPrompt,
   thinToWeekly,
+  ROLE,
 } from "./src/prompts.js";
 import { callAI, runAgentLoop, isAiConfigured, aiConfigInfo } from "./src/ai.js";
 import { TOOL_DEFS, executeTool } from "./src/tools.js";
@@ -197,6 +214,42 @@ function buildPromptForMode(body) {
     return buildComparePrompt(sa, sb, profile);
   }
   throw new Error(`未知 mode: ${mode}`);
+}
+
+/**
+ * 拼装对话系统段（每轮后台生成时按当前状态重新生成，历史消息只带正文）：
+ * - follow_up：快答指令 + 关联报告正文 + 关联训练压缩数据 + 工具指引；
+ * - chat：教练角色 + 指标口径 + 用户背景 + 对话指令 + 工具指引。
+ */
+function buildChatSystemSection(chat) {
+  const agentic = AI_CONFIG.agentic !== false;
+  if (chat.mode === "follow_up") {
+    let s = buildChatInstruction("follow_up");
+    // 报告正文：追问以报告内容为锚（报告可能已被滚动清理，缺则仅靠训练数据）
+    if (chat.report_id != null) {
+      const rep = getAiReport(chat.report_id);
+      if (rep?.markdown) s += `\n\n训练分析报告：\n${rep.markdown}`;
+    }
+    // 追问只带报告会让 AI 无法回答报告未覆盖的细节，按 file_name 附压缩后的训练数据
+    const summary = chat.file_name ? getActivitySummary(chat.file_name) : null;
+    if (summary) {
+      s +=
+        "\n\n本次训练数据（供引用具体细节）：\n```json\n" +
+        JSON.stringify(compactSummaryForPrompt(summary)) +
+        "\n```";
+    }
+    if (agentic) s += "\n\n" + buildAgenticSection();
+    return s;
+  }
+  // chat：无报告上下文的直接对话，取数全靠 agentic 工具调用
+  const parts = [
+    ROLE,
+    buildMetricGlossary(),
+    buildProfileSection(getProfile()),
+    buildChatInstruction("chat"),
+  ].filter(Boolean);
+  if (agentic) parts.push(buildAgenticSection());
+  return parts.join("\n\n");
 }
 
 // ---------------- 请求处理 ----------------
@@ -442,8 +495,9 @@ async function handleApi(req, res, url) {
     return;
   }
 
-  // POST /api/ai/follow-up 基于已有报告继续提问（不缓存）
-  if (req.method === "POST" && url.pathname === "/api/ai/follow-up") {
+  // POST /api/ai/chat  {chat_id?, mode:'follow_up'|'chat', message, report_id?, file_name?}
+  // 落库 user 消息 + pending 占位 → 202；后台 agentic 生成后回填 completed/failed
+  if (req.method === "POST" && url.pathname === "/api/ai/chat") {
     let body;
     try {
       body = JSON.parse((await readBody(req, 1024 * 1024)).toString("utf8"));
@@ -451,62 +505,112 @@ async function handleApi(req, res, url) {
       return sendJson(res, 400, { error: "请求体需为 JSON" });
     }
     if (!isAiConfigured())
-      return sendJson(res, 400, { error: "未配置 AI 密钥（设置页可配），无法使用追问" });
-    const msgs = body?.messages;
-    if (!Array.isArray(msgs) || msgs.length === 0)
-      return sendJson(res, 400, { error: "messages 不能为空数组" });
-    try {
-      const messages = msgs
-        .map((m) => ({ role: m.role, content: String(m.content ?? "") }))
-        .filter((m) => ["system", "user", "assistant"].includes(m.role));
-      if (!messages.length) throw new Error("messages 格式无效");
-      // 以报告内容为主；前置回答指令：200 字以内、结合本次训练的具体数据细节指导。
-      // 追问会话本身只带报告 Markdown，这里按 file_name 把压缩后的训练数据一并附上，
-      // 否则 AI 只能引用报告里出现的数字，无法回答报告未覆盖的细节问题。
-      let instruction =
-        "请基于下面的训练分析报告与训练数据回答后续问题。要求：每次回答控制在 200 字以内；" +
-        "必须引用本次训练中的具体数据细节（如 NP/IF、分区占比、心率漂移、峰功率、备注等）给出针对性指导，避免泛泛而谈；不要分点罗列。";
-      const fname = safeName(body?.file_name);
-      const fsummary = fname ? getActivitySummary(fname) : null;
-      if (fsummary) {
-        instruction +=
-          "\n\n本次训练数据（供引用具体细节）：\n```json\n" +
-          JSON.stringify(compactSummaryForPrompt(fsummary)) +
-          "\n```";
-      }
-      messages.unshift({ role: "user", content: instruction });
-      let chunkCount = 0, charCount = 0, heartbeats = 0;
-      // agentic 模式：追加工具使用指引并走 runAgentLoop（追问此阶段仍同步、不缓存）
-      const finalMessages =
-        AI_CONFIG.agentic !== false
-          ? [
-              { role: "user", content: buildAgenticSection() },
-              ...messages,
-            ]
-          : messages;
-      const markdown = await callAiMaybeAgentic(finalMessages, {
-        onChunk: (delta) => {
-          chunkCount++;
-          charCount += delta.length;
-          if (chunkCount === 1) console.log("[AI follow-up] 开始接收流式 chunk...");
-          if (chunkCount % 5 === 0) {
-            console.log(`[AI follow-up] 已接收 ${chunkCount} 个 chunk，累计 ${charCount} 字符`);
-          }
-        },
-        onHeartbeat: () => {
-          heartbeats++;
-          console.log(`[AI follow-up] 仍在生成中...（${heartbeats * 30}s）`);
-        },
+      return sendJson(res, 400, { error: "未配置 AI 密钥（设置页可配），无法使用对话" });
+    const mode = body?.mode;
+    if (!/^(follow_up|chat)$/.test(mode ?? ""))
+      return sendJson(res, 400, { error: "mode 需为 follow_up/chat" });
+    const message = String(body?.message ?? "").trim();
+    if (!message) return sendJson(res, 400, { error: "message 不能为空" });
+    if (message.length > 2000)
+      return sendJson(res, 400, { error: "message 过长（上限 2000 字）" });
+
+    let chatId = body?.chat_id;
+    if (chatId != null) {
+      // 继续既有对话：校验存在（404），沿用其 mode/report_id/file_name
+      chatId = Number(chatId);
+      if (!Number.isInteger(chatId) || chatId <= 0)
+        return sendJson(res, 400, { error: "chat_id 参数无效" });
+      if (!getAiChat(chatId)) return sendJson(res, 404, { error: "对话不存在" });
+    } else {
+      // 新建对话：title 取首条消息前 50 字
+      const fileName = body?.file_name ? safeName(body.file_name) : null;
+      const reportId = Number(body?.report_id);
+      chatId = createAiChat(mode, {
+        report_id: Number.isInteger(reportId) && reportId > 0 ? reportId : null,
+        file_name: fileName,
+        title: message.slice(0, 50),
       });
-      const html = marked.parse(markdown, {
-        gfm: true,
-        headerIds: false,
-        mangle: false,
-      });
-      sendJson(res, 200, { markdown, html });
-    } catch (e) {
-      sendJson(res, 502, { error: `AI 追问失败: ${e.message}` });
     }
+    addAiChatMessage(chatId, "user", message);
+    const pendingId = addAiChatMessage(chatId, "assistant", "", "pending");
+    touchAiChat(chatId);
+    sendJson(res, 202, {
+      accepted: true,
+      chat_id: chatId,
+      message_id: pendingId,
+      message: "已提交，AI 正在生成回答。",
+    });
+    (async () => {
+      try {
+        // 系统段每轮按当前状态重新拼装（备注/profile 修改后下一轮自动生效）；
+        // 历史只带 user/assistant 正文，排除 pending 占位与失败消息
+        const chat = getAiChat(chatId);
+        const history = chat.messages
+          .filter((m) => m.status === "completed" && m.content)
+          .map((m) => ({ role: m.role, content: m.content }));
+        const messages = [
+          { role: "user", content: buildChatSystemSection(chat) },
+          ...history,
+        ];
+        let heartbeats = 0;
+        const markdown = await callAiMaybeAgentic(messages, {
+          onHeartbeat: () => {
+            heartbeats++;
+            console.log(`[AI chat] 仍在生成中...（${heartbeats * 30}s）`);
+          },
+        });
+        updateAiChatMessage(pendingId, { content: markdown, status: "completed", error: null });
+        touchAiChat(chatId);
+        console.log(`[AI chat] 完成：chat_id=${chatId}，message_id=${pendingId}，${markdown.length} 字符`);
+      } catch (e) {
+        updateAiChatMessage(pendingId, { status: "failed", error: e.message });
+        touchAiChat(chatId);
+        console.error(`[AI chat] 后台生成失败: ${e.message}`);
+      }
+    })();
+    return;
+  }
+
+  // GET /api/ai/chat?id=  对话元信息 + 全部消息；有 pending 消息时 202（前端继续轮询）
+  if (req.method === "GET" && url.pathname === "/api/ai/chat") {
+    const id = Number(url.searchParams.get("id"));
+    if (!Number.isInteger(id) || id <= 0)
+      return sendJson(res, 400, { error: "id 参数无效" });
+    const chat = getAiChat(id);
+    if (!chat) return sendJson(res, 404, { error: "对话不存在" });
+    // assistant 完成的回答附 marked 渲染后的 html（口径同报告）
+    const messages = chat.messages.map((m) =>
+      m.role === "assistant" && m.status === "completed" && m.content
+        ? { ...m, html: marked.parse(m.content, { gfm: true, headerIds: false, mangle: false }) }
+        : m,
+    );
+    const hasPending = messages.some((m) => m.status === "pending");
+    sendJson(res, hasPending ? 202 : 200, { ...chat, messages });
+    return;
+  }
+
+  // GET /api/ai/chats?mode=follow_up|chat[&report_id=]  对话列表（report_id 用于找回该报告的追问对话）
+  if (req.method === "GET" && url.pathname === "/api/ai/chats") {
+    const mode = url.searchParams.get("mode");
+    if (!/^(follow_up|chat)$/.test(mode ?? ""))
+      return sendJson(res, 400, { error: "mode 参数需为 follow_up/chat" });
+    const reportId = Number(url.searchParams.get("report_id"));
+    if (url.searchParams.has("report_id")) {
+      if (!Number.isInteger(reportId) || reportId <= 0)
+        return sendJson(res, 400, { error: "report_id 参数无效" });
+      return sendJson(res, 200, { mode, chat_id: findFollowUpChat(reportId) });
+    }
+    sendJson(res, 200, { mode, chats: listAiChats(mode) });
+    return;
+  }
+
+  // DELETE /api/ai/chat?id=  删除整个对话及其全部消息
+  if (req.method === "DELETE" && url.pathname === "/api/ai/chat") {
+    const id = Number(url.searchParams.get("id"));
+    if (!Number.isInteger(id) || id <= 0)
+      return sendJson(res, 400, { error: "id 参数无效" });
+    if (deleteAiChat(id) === 0) return sendJson(res, 404, { error: "对话不存在" });
+    sendJson(res, 200, { ok: true });
     return;
   }
 
