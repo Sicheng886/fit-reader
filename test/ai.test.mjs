@@ -14,8 +14,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
-import { callAI, isAiConfigured } from "../src/ai.js";
-import { AI_CONFIG } from "../src/settings.js";
+import { callAI, runAgentLoop, isAiConfigured } from "../src/ai.js";
+import { AI_CONFIG, AGENTIC } from "../src/settings.js";
 
 /** 启动一个 mock chat/completions 服务，handler 接收解析后的请求体 */
 function startMockServer(handler) {
@@ -118,5 +118,194 @@ test("isAiConfigured: 未配置密钥时为 false", () => {
     assert.equal(isAiConfigured(), false);
   } finally {
     AI_CONFIG.api_key = saved;
+  }
+});
+
+// ---------------- runAgentLoop（agentic function calling） ----------------
+
+const FAKE_TOOLS = [
+  {
+    type: "function",
+    function: {
+      name: "get_form_series",
+      description: "取逐日状态",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+];
+
+const toolCallMsg = (name, args, id = "call_1") => ({
+  content: null,
+  tool_calls: [
+    { id, type: "function", function: { name, arguments: JSON.stringify(args) } },
+  ],
+});
+
+const contentMsg = (text) => ({ content: text });
+
+test("runAgentLoop: 首轮 tool_calls → 执行回填 → 次轮返回正文", async () => {
+  const seenBodies = [];
+  const { server, port } = await startMockServer((reqBody, res) => {
+    seenBodies.push(reqBody);
+    res.setHeader("Content-Type", "application/json");
+    const msg =
+      seenBodies.length === 1
+        ? toolCallMsg("get_form_series", { days: 14 })
+        : contentMsg("最终回答");
+    res.end(JSON.stringify({ choices: [{ message: msg }] }));
+  });
+  const restore = useMockConfig(port);
+  try {
+    const executed = [];
+    const logged = [];
+    const text = await runAgentLoop(
+      [{ role: "user", content: "这周状态如何？" }],
+      FAKE_TOOLS,
+      async (name, args) => {
+        executed.push([name, args]);
+        return JSON.stringify({ series: [1, 2, 3] });
+      },
+      { timeoutMs: 5000, onToolCall: (n, a, r) => logged.push([n, a, r]) },
+    );
+    assert.equal(text, "最终回答");
+    // 首轮请求带 tools 定义与 tool_choice
+    assert.deepEqual(seenBodies[0].tools, FAKE_TOOLS);
+    assert.equal(seenBodies[0].tool_choice, "auto");
+    assert.equal(seenBodies[0].stream, false); // agentic 循环内全部非流式
+    // executeTool 收到解析后的参数，onToolCall 拿到结果
+    assert.deepEqual(executed, [["get_form_series", { days: 14 }]]);
+    assert.equal(logged.length, 1);
+    // 次轮请求：assistant（含 tool_calls）+ role:"tool" 结果回填
+    const msgs = seenBodies[1].messages;
+    assert.equal(msgs.at(-2).role, "assistant");
+    assert.equal(msgs.at(-2).tool_calls[0].function.name, "get_form_series");
+    assert.equal(msgs.at(-1).role, "tool");
+    assert.equal(msgs.at(-1).tool_call_id, "call_1");
+    assert.equal(msgs.at(-1).content, JSON.stringify({ series: [1, 2, 3] }));
+  } finally {
+    restore();
+    server.close();
+  }
+});
+
+test("runAgentLoop: 轮数耗尽后去掉 tools 强制直接作答", async () => {
+  const seenBodies = [];
+  const { server, port } = await startMockServer((reqBody, res) => {
+    seenBodies.push(reqBody);
+    res.setHeader("Content-Type", "application/json");
+    const hasTools = Array.isArray(reqBody.tools);
+    const msg = hasTools
+      ? toolCallMsg("get_form_series", {}, `call_${seenBodies.length}`)
+      : contentMsg("被迫作答");
+    res.end(JSON.stringify({ choices: [{ message: msg }] }));
+  });
+  const restore = useMockConfig(port);
+  try {
+    let execCount = 0;
+    const text = await runAgentLoop(
+      [{ role: "user", content: "问" }],
+      FAKE_TOOLS,
+      async () => {
+        execCount++;
+        return "{}";
+      },
+      { timeoutMs: 10000 },
+    );
+    assert.equal(text, "被迫作答");
+    assert.equal(execCount, AGENTIC.max_rounds); // 每轮一次工具调用
+    // 共 max_rounds 轮带 tools + 最后一轮不带 tools
+    assert.equal(seenBodies.length, AGENTIC.max_rounds + 1);
+    const last = seenBodies.at(-1);
+    assert.equal(last.tools, undefined);
+    assert.match(last.messages.at(-1).content, /直接作答/);
+  } finally {
+    restore();
+    server.close();
+  }
+});
+
+test("runAgentLoop: 模型不支持 tools（首轮 400）自动降级单轮", async () => {
+  const seenBodies = [];
+  const { server, port } = await startMockServer((reqBody, res) => {
+    seenBodies.push(reqBody);
+    if (Array.isArray(reqBody.tools)) {
+      res.statusCode = 400;
+      res.end(JSON.stringify({ error: { message: "tools not supported" } }));
+      return;
+    }
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify({ choices: [{ message: contentMsg("降级回答") }] }));
+  });
+  const restore = useMockConfig(port);
+  try {
+    let degraded = null;
+    const text = await runAgentLoop(
+      [{ role: "user", content: "问" }],
+      FAKE_TOOLS,
+      async () => "{}",
+      { timeoutMs: 5000, onDegrade: (msg) => (degraded = msg) },
+    );
+    assert.equal(text, "降级回答");
+    assert.match(degraded, /400/);
+    assert.equal(seenBodies.length, 2); // 带 tools 失败一次 + 无 tools 重发一次
+  } finally {
+    restore();
+    server.close();
+  }
+});
+
+test("runAgentLoop: AI_CONFIG.agentic=false 时不挂 tools 直接单轮", async () => {
+  const seenBodies = [];
+  const { server, port } = await startMockServer((reqBody, res) => {
+    seenBodies.push(reqBody);
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify({ choices: [{ message: contentMsg("单轮回答") }] }));
+  });
+  const restore = useMockConfig(port, { agentic: false });
+  try {
+    const text = await runAgentLoop(
+      [{ role: "user", content: "问" }],
+      FAKE_TOOLS,
+      async () => "{}",
+      { timeoutMs: 5000 },
+    );
+    assert.equal(text, "单轮回答");
+    assert.equal(seenBodies.length, 1);
+    assert.equal(seenBodies[0].tools, undefined);
+  } finally {
+    restore();
+    server.close();
+  }
+});
+
+test("runAgentLoop: executeTool 抛异常转为 {error} 回填，循环不中断", async () => {
+  const seenBodies = [];
+  const { server, port } = await startMockServer((reqBody, res) => {
+    seenBodies.push(reqBody);
+    res.setHeader("Content-Type", "application/json");
+    const msg =
+      seenBodies.length === 1
+        ? toolCallMsg("get_form_series", {})
+        : contentMsg("带错作答");
+    res.end(JSON.stringify({ choices: [{ message: msg }] }));
+  });
+  const restore = useMockConfig(port);
+  try {
+    const text = await runAgentLoop(
+      [{ role: "user", content: "问" }],
+      FAKE_TOOLS,
+      async () => {
+        throw new Error("db 炸了");
+      },
+      { timeoutMs: 5000 },
+    );
+    assert.equal(text, "带错作答");
+    const toolMsg = seenBodies[1].messages.at(-1);
+    assert.equal(toolMsg.role, "tool");
+    assert.match(toolMsg.content, /"error"/);
+    assert.match(toolMsg.content, /db 炸了/);
+  } finally {
+    restore();
+    server.close();
   }
 });

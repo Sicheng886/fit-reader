@@ -48,6 +48,29 @@ function jsonBlock(obj) {
   return "```json\n" + JSON.stringify(obj, null, 2) + "\n```";
 }
 
+/**
+ * Agentic 工具使用指引段（仅服务端 agentic 调用注入；CLI 提示词命令不注入——
+ * 复制出去的提示词无法回调本机接口，挂工具指引只会得到幻觉调用）。
+ * 工具清单与 src/tools.js 的 TOOL_DEFS 对应。
+ */
+export function buildAgenticSection() {
+  return `## 数据查询工具
+
+你可以通过工具调用主动查询本应用训练库中的数据，不必只依赖上方预装的数据。可用工具：
+- list_activities：训练简明清单（日期/类型/时长/TSS/NP/IF），可按日期范围/运动类型/分类过滤——这是"目录页"
+- get_activity_summary：按 file_name 取单次训练完整汇总指标（NP/IF/TSS/分区/峰功率/心率漂移/备注等）
+- get_activity_records：按 file_name 取逐秒时序（功率/心率/踏频等），可用 start_sec/end_sec 只取时间窗片段
+- get_form_series：最近 N 天逐日 CTL/ATL/TSB（疲劳与状态走势）
+- get_monthly_summary：逐月训练汇总（长期负荷趋势）
+- get_athlete_profile：骑手参数（FTP/最大心率/体重）与用户身份、训练目标
+- estimate_ftp：基于历史骑行估算 FTP（含置信度）
+
+使用规则：
+1. 只在上方预装数据不足以回答时才调用工具；能直接回答就不要调用。
+2. 深挖单次训练时先 list_activities 找到 file_name，再用 get_activity_summary / get_activity_records 按名取数。
+3. 每轮只发起回答所必需的调用，不要批量试探。`;
+}
+
 /** 统一拼装：角色 + 口径 + 用户背景（可选）+ 各数据段 + 问题清单 */
 function assemble(dataSections, questions, profile) {
   return [

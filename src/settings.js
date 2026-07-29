@@ -24,6 +24,17 @@ export const AI_CONFIG = {
   timeout_ms: 600000, // 总等待超时（复盘报告生成慢，默认 10 分钟）
   stream: false, // 是否流式输出；部分账号/模型不真正流式吐字，非流式更稳
   stall_ms: 60000, // 流式空闲超时，每收到一个 chunk 重置
+  agentic: true, // 是否启用 agentic 工具调用（function calling）；模型不支持 tools 时自动降级单轮
+};
+
+// ============ Agentic 工具调用参数（ai.js runAgentLoop / tools.js 使用） ============
+export const AGENTIC = {
+  max_rounds: 6, // 最大工具调用轮数，超出后强制模型直接作答
+  tool_result_max_chars: 4000, // 单个工具结果截断上限（超出附"（结果已截断）"标记）
+  records_max_points: 600, // get_activity_records 时序抽稀点数上限
+  list_limit: 50, // list_activities 返回条数上限
+  form_max_days: 120, // get_form_series 天数上限
+  monthly_max: 24, // get_monthly_summary 月数上限
 };
 
 // ============ 功率分区（Coggan 7 区，按 FTP 百分比） ============

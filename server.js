@@ -63,11 +63,14 @@ import {
   buildPlanPrompt,
   buildTaperPrompt,
   buildComparePrompt,
+  buildAgenticSection,
   compactSummaryForPrompt,
   thinToWeekly,
 } from "./src/prompts.js";
-import { callAI, isAiConfigured, aiConfigInfo } from "./src/ai.js";
-import { ATHLETE, FTP_ESTIMATION, POWER_ZONES, HR_ZONES } from "./src/settings.js";
+import { callAI, runAgentLoop, isAiConfigured, aiConfigInfo } from "./src/ai.js";
+import { TOOL_DEFS, executeTool } from "./src/tools.js";
+import { loadRecords, safeName } from "./src/records.js";
+import { AI_CONFIG, ATHLETE, FTP_ESTIMATION, POWER_ZONES, HR_ZONES } from "./src/settings.js";
 import { estimateFtpFromHistory } from "./src/ftp.js";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -92,13 +95,6 @@ function sendJson(res, status, obj) {
   const body = JSON.stringify(obj);
   res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
   res.end(body);
-}
-
-/** 文件名安全化：只取 basename，防止路径穿越 */
-function safeName(name) {
-  if (!name || typeof name !== "string") return null;
-  const base = path.basename(name);
-  return base === name && !base.includes("..") ? base : null;
 }
 
 /** 分区定义 × 基准值（FTP/最大心率）→ 各区具体范围文本，如 { Z2: "72-98", Z7: "195+" } */
@@ -129,31 +125,24 @@ function readBody(req, limitBytes = 64 * 1024 * 1024) {
   });
 }
 
-/** 解析 records CSV → 抽稀后的时序数组（前端画图用，null 表示缺口） */
-function loadRecords(fileName, maxPoints = 1400) {
-  const base = path.basename(fileName, path.extname(fileName));
-  const csvPath = path.join(OUTPUT_DIR, `${base}.records.csv`);
-  if (!fs.existsSync(csvPath)) return null;
-  const lines = fs.readFileSync(csvPath, "utf8").trim().split("\n");
-  const rows = lines.slice(1); // 跳过表头
-  const stride = Math.max(1, Math.ceil(rows.length / maxPoints));
-  const num = (s) => (s === "" || s == null ? null : Number(s));
-  const out = [];
-  for (let i = 0; i < rows.length; i += stride) {
-    const c = rows[i].split(",");
-    out.push({
-      t: c[0],
-      power: num(c[1]),
-      heart_rate: num(c[2]),
-      cadence: num(c[3]),
-      altitude: num(c[4]),
-      speed: num(c[5]),
-      distance_m: num(c[6]),
-      // 旧版 CSV 没有温度列，c[7] 为 undefined 时归一为 null（避免 NaN 进图表）
-      temperature: num(c[7]),
+/**
+ * AI 调用统一入口：agentic 开启（AI_CONFIG.agentic，默认开）时走 runAgentLoop
+ * 并挂训练库查询工具（function calling），工具调用与降级记服务日志；
+ * 关闭时维持原单轮 callAI（含流式设置）。
+ */
+function callAiMaybeAgentic(messages, { onChunk, onHeartbeat } = {}) {
+  if (AI_CONFIG.agentic !== false) {
+    return runAgentLoop(messages, TOOL_DEFS, executeTool, {
+      onHeartbeat,
+      onToolCall: (name, args, result) => {
+        const chars = typeof result === "string" ? result.length : 0;
+        console.log(`[AI tool] ${name}(${JSON.stringify(args)}) → ${chars} 字符`);
+      },
+      onDegrade: (errMsg) =>
+        console.warn(`[AI] 模型不支持 tools，已降级为单轮调用（${errMsg}）`),
     });
   }
-  return { points: out, total_seconds: rows.length, stride };
+  return callAI(messages, { onChunk, onHeartbeat });
 }
 
 /** 组装 AI 提示词（复用 P2 模板），返回 { prompt } 或抛出带 message 的错误 */
@@ -356,7 +345,7 @@ async function handleApi(req, res, url) {
   // GET /api/records?name=x.fit
   if (req.method === "GET" && url.pathname === "/api/records") {
     const name = safeName(url.searchParams.get("name"));
-    const data = name && loadRecords(name);
+    const data = name && loadRecords(name, { outputDir: OUTPUT_DIR });
     if (!data)
       return sendJson(res, 404, { error: "时序数据不存在（可能分析时输出目录不同）" });
     sendJson(res, 200, data);
@@ -418,20 +407,29 @@ async function handleApi(req, res, url) {
     (async () => {
       try {
         let chunkCount = 0, charCount = 0, heartbeats = 0;
-        const markdown = await callAI(prompt, {
-          onChunk: (delta) => {
-            chunkCount++;
-            charCount += delta.length;
-            if (chunkCount === 1) console.log("[AI] 开始接收流式 chunk...");
-            if (chunkCount % 5 === 0) {
-              console.log(`[AI] 已接收 ${chunkCount} 个 chunk，累计 ${charCount} 字符`);
-            }
+        // agentic 模式：提示词末尾追加工具使用指引（未配置密钥走复制提示词时不含此段——
+        // 复制出去的提示词无法回调本机工具）
+        const finalPrompt =
+          AI_CONFIG.agentic !== false
+            ? prompt + "\n\n" + buildAgenticSection()
+            : prompt;
+        const markdown = await callAiMaybeAgentic(
+          [{ role: "user", content: finalPrompt }],
+          {
+            onChunk: (delta) => {
+              chunkCount++;
+              charCount += delta.length;
+              if (chunkCount === 1) console.log("[AI] 开始接收流式 chunk...");
+              if (chunkCount % 5 === 0) {
+                console.log(`[AI] 已接收 ${chunkCount} 个 chunk，累计 ${charCount} 字符`);
+              }
+            },
+            onHeartbeat: () => {
+              heartbeats++;
+              console.log(`[AI] 仍在生成中...（${heartbeats * 30}s）`);
+            },
           },
-          onHeartbeat: () => {
-            heartbeats++;
-            console.log(`[AI] 仍在生成中...（${heartbeats * 30}s）`);
-          },
-        });
+        );
         updateAiReport(reportId, { markdown, status: "completed", error: null });
         console.log(
           `[AI] 完成：report_id=${reportId}，${chunkCount} 个 chunk，${charCount} 字符，心跳 ${heartbeats} 次`,
@@ -478,7 +476,15 @@ async function handleApi(req, res, url) {
       }
       messages.unshift({ role: "user", content: instruction });
       let chunkCount = 0, charCount = 0, heartbeats = 0;
-      const markdown = await callAI(messages, {
+      // agentic 模式：追加工具使用指引并走 runAgentLoop（追问此阶段仍同步、不缓存）
+      const finalMessages =
+        AI_CONFIG.agentic !== false
+          ? [
+              { role: "user", content: buildAgenticSection() },
+              ...messages,
+            ]
+          : messages;
+      const markdown = await callAiMaybeAgentic(finalMessages, {
         onChunk: (delta) => {
           chunkCount++;
           charCount += delta.length;

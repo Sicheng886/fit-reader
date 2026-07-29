@@ -251,8 +251,9 @@ export function setAiConfig(partial) {
     updates[key] = Math.round(v);
   }
   if (partial?.stream != null) updates.stream = Boolean(partial.stream);
+  if (partial?.agentic != null) updates.agentic = Boolean(partial.agentic);
   if (!Object.keys(updates).length)
-    throw new Error("至少需要提供一个字段：api_key / base_url / model / temperature / timeout_ms / stream / stall_ms");
+    throw new Error("至少需要提供一个字段：api_key / base_url / model / temperature / timeout_ms / stream / stall_ms / agentic");
   const merged = { ...AI_CONFIG, ...updates };
   const db = openDb();
   db.prepare(

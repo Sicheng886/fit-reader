@@ -10,6 +10,7 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 
@@ -149,6 +150,78 @@ test("AI 接口（周期规划）可生成提示词", async () => {
   assert.equal(resp.status, 200);
   const data = await resp.json();
   assert.match(data.prompt, /周期|逐月/);
+});
+
+test("AI 接口（已配置密钥 + mock 服务）走 agentic 工具调用完成报告", async () => {
+  // mock chat/completions：首轮返回 tool_calls，次轮返回正文
+  const seenBodies = [];
+  const mockAi = http.createServer((req, res) => {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      seenBodies.push(JSON.parse(body));
+      res.setHeader("Content-Type", "application/json");
+      const msg =
+        seenBodies.length === 1
+          ? {
+              content: null,
+              tool_calls: [
+                {
+                  id: "call_1",
+                  type: "function",
+                  function: { name: "get_athlete_profile", arguments: "{}" },
+                },
+              ],
+            }
+          : { content: "agentic 复盘报告正文" };
+      res.end(JSON.stringify({ choices: [{ message: msg }] }));
+    });
+  });
+  await new Promise((r) => mockAi.listen(0, "127.0.0.1", r));
+  const saved = { ...AI_CONFIG };
+  Object.assign(AI_CONFIG, {
+    api_key: "test-key",
+    base_url: `http://127.0.0.1:${mockAi.address().port}/v1`,
+    stream: false,
+    agentic: true,
+  });
+  try {
+    const resp = await fetch(base + "/api/ai", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "review", file_name: "web_test_ride.fit" }),
+    });
+    assert.equal(resp.status, 202);
+    const { report_id } = await resp.json();
+
+    // 轮询报告直至 completed（后台 runAgentLoop 异步生成）
+    let report;
+    for (let i = 0; i < 50; i++) {
+      const r = await getJson(`/api/ai/report?id=${report_id}`);
+      if (r.status === 200) {
+        report = r.data;
+        break;
+      }
+      if (r.data?.status === "failed")
+        assert.fail(`报告生成失败: ${r.data.error}`);
+      await new Promise((r2) => setTimeout(r2, 100));
+    }
+    assert.ok(report, "报告应在 5 秒内完成");
+    assert.equal(report.status, "completed");
+    assert.match(report.markdown, /agentic 复盘报告正文/);
+
+    // 首轮请求：带 tools 定义，提示词含工具使用指引段
+    assert.ok(Array.isArray(seenBodies[0].tools), "首轮应挂 tools");
+    assert.match(seenBodies[0].messages[0].content, /数据查询工具/);
+    // 次轮请求：tool 结果以 role:"tool" 回填（get_athlete_profile 返回含 ftp_watts）
+    const toolMsg = seenBodies[1].messages.at(-1);
+    assert.equal(toolMsg.role, "tool");
+    assert.equal(toolMsg.tool_call_id, "call_1");
+    assert.match(toolMsg.content, /ftp_watts/);
+  } finally {
+    Object.assign(AI_CONFIG, saved);
+    mockAi.close();
+  }
 });
 
 test("路径穿越被拒绝", async () => {
