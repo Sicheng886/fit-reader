@@ -94,8 +94,30 @@ node index.js input/MAGENE_C506SE_2026-07-17_202219_1273797.fit output/
 - 注释与文档一律使用**中文**（本项目的主要自然语言），函数级注释说明算法口径（如"30s 滚动平均的四次方均根"）。
 - 主逻辑集中在 `index.js`：新功能优先加入"工具函数"区，保持纯函数、无状态；分区定义与算法阈值一律放进 `src/settings.js`，不要在 `index.js` 里硬编码常量；骑手参数属于"会变的数据"，走训练库 settings 表（src/db.js `setAthlete`），不要新增文件型配置。
 - 数值处理惯例：缺数据统一用 `null` 表示（CSV 中留空，JSON 中字段可省略）；`undefined` 字段在输出前会被清理； rounding 口径写在代码里（如功率取整、海拔保留 1 位、速度保留 2 位）。
-- 算法须遵循运动科学标准口径（NP/IF/TSS 公式见 README"已完成的指标算法"一节），改算法时同步更新 README。
-- 核心指标依赖骑手参数（FTP / 最大心率 / 体重），生效值 = 训练库 settings 表 athlete 行（Web 设置页维护），库中无配置时回落 `src/settings.js` 的 `ATHLETE` 出厂默认值；改默认值时确认 README 中的示例配置是否需同步。
+- 算法须遵循运动科学标准口径（公式见下文「输出格式与指标算法口径」一节），改算法时同步更新该节。
+- 核心指标依赖骑手参数（FTP / 最大心率 / 体重），生效值 = 训练库 settings 表 athlete 行（Web 设置页维护），库中无配置时回落 `src/settings.js` 的 `ATHLETE` 出厂默认值。
+
+## 输出格式与指标算法口径
+
+summary.json 字段（喂 AI 的汇总结构，records.csv 列见上文「项目概览」）：
+
+- `activity`：日期、运动类型（cycling/running/swimming）、时长、距离、爬升、平均速度、卡路里
+- `athlete_context`：骑手参数 + 当日 CTL/ATL/TSB 与中文状态简评
+- `power`：平均/NP/最大功率、VI、IF、TSS、功体比、峰功率曲线（5s/1min/5min/20min）、FTP 自动估算、Coggan 7 区时间分布
+- `heart_rate`：平均/最大心率、5 区时间分布、心率漂移（有氧解耦 %）
+- `cadence`：平均踏频（剔除 0 rpm 滑行秒，只统计踩踏时段，与码表 session / Strava 口径一致；跑步为步频 spm）
+- `temperature`（avg/min/max）/ `pace`（仅跑步：配速 min/km）/ `swim`（仅游泳：趟数/泳池长度/划水/SWOLF）/ `developer_fields`（非标准字段数值统计）
+- `cadence_power`（踏频-功率联合分析）、`climbs`（爬坡段）、`interval_set`（间歇组）、`segments`（圈/赛段 + 间歇工作段）、`anomalies`（设备异常标注）、`data_quality`（覆盖率/丢弃数/缺失秒数）
+
+指标算法口径：
+
+- NP：30s 滚动平均 → 四次方均值 → 开四次方根（缺口窗口不参与）；IF = NP / FTP；TSS = 时长秒 × NP × IF / (FTP × 3600) × 100
+- 心率漂移（有氧解耦）：前后半程效率因子的相对变化；骑行用功率/心率，无功率数据时自动切换速度/心率
+- CTL = TSS 的 42 天指数加权（体能）；ATL = 7 天（疲劳）；TSB = CTL − ATL（状态）；缺天按 TSS=0 参与衰减
+- 峰功率曲线要求窗口数据连续；异常检测：功率缺失 >60s、整段记录缺失 ≥10s、心率跳变（相邻秒差 >25）
+- FTP 自动估算：20min 峰功率 × 0.95（无连续 20min 窗口时省略）
+- 间歇识别：≥105% FTP 过阈段，≤10s 瞬时掉功率合并、<30s 丢弃；爬坡段：30s 窗口坡度 ≥3% 且爬升 ≥15m、长度 ≥300m；踏频-功率联合分析：仅统计 ≥75% FTP 发力时段，低踏频 <80rpm / 高踏频 >90rpm
+- 月度强度分布：低(Z1–Z2)/中(Z3–Z4)/高(Z5–Z7) 按时长加权；低≥75% 且高>中 → polarized，低>中>高 → pyramidal，其余 → sweet_spot
 
 ## 测试策略
 
@@ -111,8 +133,7 @@ node index.js input/MAGENE_C506SE_2026-07-17_202219_1273797.fit output/
 
 ## 已知注意事项
 
-- **README 与实际代码的偏差已修复**：入口文件为 `index.js`，配置在 `src/settings.js`；README 早期规划的 `make_test_fit.py` 已以 `test/make_test_fit.mjs`（JS 手写 FIT 二进制生成器）落地。
-- README 中包含一份很长的功能路线图（P0–P4），**P0 已全部完成**（批量处理、FTP 自动估算、间歇识别、爬坡段提取、踏频-功率联合分析），**P1 已全部完成**（SQLite 训练库、CTL/ATL/TSB 写入 `athlete_context`、月汇总 `--monthly`、趋势图 `--trend`；因训练频率低，路线图的“周汇总”落地为月汇总），**P2 已全部完成**（提示词模板库 `src/prompts.js` + 四个提示词命令 `--review`/`--plan`/`--taper`/`--compare`，只生成文本供复制，调 API 属 P4），**P3 已全部完成**（跑步/游泳适配、开发者字段统计、损坏文件缺失计数、`test/` 下合成 FIT 生成器 + node:test 回归测试），**P4 已落地 AI API 对接与 Web 界面**（`src/ai.js` OpenAI 兼容客户端 + `server.js`/`web/` 本地 Web 应用；TrainingPeaks/intervals.icu 对接未做）。实现新功能前先看是否已在路线图中、应归入哪个优先级，完成后勾选对应条目。
+- **旧版《FIT训练分析项目README.md》已删除**（P0–P4 路线图全部落地后，仍有价值的输出格式与算法口径并入本文档「输出格式与指标算法口径」一节；面向用户的使用说明以根目录 `README.md` 为准，Docker 部署见 `DEPLOY.md`）。路线图完成情况：P0（批量处理、FTP 自动估算、间歇识别、爬坡段提取、踏频-功率联合分析）、P1（SQLite 训练库、CTL/ATL/TSB 写入 `athlete_context`、月汇总 `--monthly`、趋势图 `--trend`；因训练频率低，路线图的“周汇总”落地为月汇总）、P2（提示词模板库 `src/prompts.js` + 四个提示词命令 `--review`/`--plan`/`--taper`/`--compare`）、P3（跑步/游泳适配、开发者字段统计、损坏文件缺失计数、合成 FIT 生成器 + node:test 回归测试）、P4（AI API 对接 + Web 界面）均已完成；TrainingPeaks/intervals.icu 对接未做。当前演进方向见 `agentic-plan.md`（AI 顾问 agentic 查询 / 对话持久化 / 记忆，分四阶段实施）。
 - **海拔单位隐藏 bug 已修复**（P3 过程中发现）：解析器按 `lengthUnit: "km"` 会把海拔/爬升缩放成 km，此前海拔输出与爬坡检测被压低 1000 倍（MAGENE 海拔恒 0 故从未暴露），现已统一换回米。
 - 没有 CI、没有部署流程——这是一个纯本地脚本项目（git 仅用于本地版本控制）。
 - 项目源码统一使用 ESM（`.js` + `"type": "module"`），`fit-file-parser` 为 CommonJS 包，通过默认导入（`import FitParser from "fit-file-parser"`）由 Node 的 CJS-ESM 互操作处理。
