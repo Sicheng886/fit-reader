@@ -1,7 +1,7 @@
 /**
  * app.js — fit-reader Web 前端（P4）
  * 零依赖 SPA：hash 路由 + 手写 SVG 图表 + 极简 Markdown 渲染。
- * 视图：概览（负荷仪表盘）/ 训练列表 / 训练详情 / 上传分析 / AI 分析 / 对话 / 设置。
+ * 视图：概览（负荷仪表盘）/ 训练列表 / 训练详情 / 上传分析 / AI 报告 / 对话 / 记忆 / 设置。
  */
 
 // ---------------- 工具 ----------------
@@ -426,7 +426,7 @@ function glossaryHtml() {
         <div><dt>FTP 科学估算</dt><dd>双方法互校：① Morton 双参数临界功率模型 CP+W′/t，解出 CP 近似 FTP；② Coggan 20 分钟峰功率 × 0.95。再用 90% HRmax 全力判定、功率/心率区间偏移、心率漂移中位数做交叉验证；数据不足时返回需要补充收集的数据清单。</dd></div>
         <div><dt>间歇识别</dt><dd>找出功率 ≥ 105% FTP 的连续段，低于阈值但 ≤ 10 秒的瞬时掉功率会被合并，短于 30 秒的段丢弃；识别到 ≥ 2 个重复工作段时输出间歇组统计。</dd></div>
         <div><dt>爬坡段提取</dt><dd>30 秒滑动窗口计算局部坡度，平均坡度 ≥ 3%、段内累计爬升 ≥ 15 m、段长 ≥ 300 m 的连续路段被提取为爬坡段。</dd></div>
-        <div><dt>AI 分析</dt><dd>服务端把训练数据、负荷走势与指标口径拼装成 Markdown 提示词，调用 OpenAI 兼容接口（默认 Kimi）生成报告；未配置 API Key 时返回完整提示词，可一键复制到任意 AI 使用。</dd></div>
+        <div><dt>AI 报告</dt><dd>服务端把训练数据、负荷走势与指标口径拼装成 Markdown 提示词，调用 OpenAI 兼容接口（默认 Kimi）生成报告；未配置 API Key 时返回完整提示词，可一键复制到任意 AI 使用。</dd></div>
       </div>
     </div>`;
 }
@@ -1012,7 +1012,7 @@ async function uploadFiles(files, statusEl) {
   }
 }
 
-// ---------------- 视图：AI 分析 ----------------
+// ---------------- 视图：AI 报告 ----------------
 
 async function renderAI() {
   app.innerHTML = `<div class="empty loading">加载中…</div>`;
@@ -1026,7 +1026,7 @@ async function renderAI() {
     : `<div class="callout">未配置 AI 密钥 — 将生成完整提示词供手动复制到任意 AI（到「设置」页填入密钥后可直接输出报告）</div>`;
 
   app.innerHTML = `
-    <div class="view-title"><h1>AI 分析</h1><span class="sub">角色 + 指标口径 + 数据 + 问题，一键生成复盘报告</span></div>
+    <div class="view-title"><h1>AI 报告</h1><span class="sub">角色 + 指标口径 + 数据 + 问题，一键生成复盘报告</span></div>
     ${cfgNote}
     <div class="ai-controls">
       <div class="ai-card">
@@ -1091,7 +1091,7 @@ async function renderAI() {
 /** 调 /api/ai 并渲染结果（已配置→Markdown 报告；未配置→提示词 + 复制按钮） */
 async function runAi(payload, panel, body) {
   panel.style.display = "";
-  body.innerHTML = `<div class="loading">AI 分析中，可能需要 30-60 秒…</div>`;
+  body.innerHTML = `<div class="loading">AI 报告生成中，可能需要 30-60 秒…</div>`;
   panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
   state.aiThread = null; // 每次生成新报告时重置追问会话
   try {
@@ -1112,7 +1112,7 @@ async function runAi(payload, panel, body) {
       const list = $("#aiReportList");
       if (list) loadReportList(list, $("#aiReportMode")?.value || "all");
     } else if (r.accepted) {
-      body.innerHTML = `<div class="callout info">${esc(r.message || "AI 分析已提交，将在后台生成并保存。")}<br><span class="muted">请稍后从历史报告查看。</span></div>`;
+      body.innerHTML = `<div class="callout info">${esc(r.message || "AI 报告已提交，将在后台生成并保存。")}<br><span class="muted">请稍后从历史报告查看。</span></div>`;
       // 在历史报告页面时刷新列表，让用户能看到后台生成的新报告
       const list = $("#aiReportList");
       if (list) loadReportList(list, $("#aiReportMode")?.value || "all");
@@ -1511,17 +1511,9 @@ async function renderSettings() {
         说明：密钥保存在本地训练库中，不会上传到其他任何地方；模型名以你的账号可用列表为准。
       </p>
     </div>
-    <div style="margin-top:16px;display:flex;gap:12px;justify-content:flex-end;align-items:center;margin-bottom:24px">
+    <div style="margin-top:16px;display:flex;gap:12px;justify-content:flex-end;align-items:center">
       <span class="muted" id="settingsSaved" style="display:none">已保存 ✓</span>
       <button class="btn" id="btnSaveSettings"><span>保存</span></button>
-    </div>
-    <div class="panel">
-      <div class="panel-title">AI 记忆</div>
-      <p class="muted" style="margin-bottom:12px;font-size:12px">
-        AI 在报告与对话中记录的用户相关事实（带日期，同主题以最新为准，已取代的不再注入提示词）。
-        记错了就删，AI 会在后续交互中重记。
-      </p>
-      <div id="memList"><div class="empty loading">加载中…</div></div>
     </div>`;
   $("#btnSaveSettings").addEventListener("click", async () => {
     const btn = $("#btnSaveSettings");
@@ -1567,9 +1559,19 @@ async function renderSettings() {
     }
   });
 
-  // AI 记忆区块：列出全部记忆（含已取代标记）+ 删除（不做编辑——错了就删，AI 会重记）
+}
+
+// ---------------- 视图：AI 记忆 ----------------
+
+async function renderMemory() {
+  app.innerHTML = `<div class="view-title"><h1>AI 记忆</h1><span class="sub">AI 在报告与对话中记录的用户相关事实</span></div>
+    <p class="muted" style="margin-bottom:12px;font-size:12px">
+      带日期的记忆会注入后续 AI 调用；同一主题相互矛盾时以日期最新者为准。已取代的记忆不再注入，但保留在库中作变化轨迹。
+      记错了就删，AI 会在后续交互中重记。
+    </p>
+    <div id="memList"><div class="empty loading">加载中…</div></div>`;
   const memList = $("#memList");
-  const renderMemories = async () => {
+  const render = async () => {
     const { memories } = await api("/api/ai/memories");
     if (!memories.length) {
       memList.innerHTML = `<div class="empty">暂无记忆</div>`;
@@ -1598,12 +1600,12 @@ async function renderSettings() {
       btn.addEventListener("click", () => {
         confirmModal("删除记忆", "删除后 AI 将不再记得该事实。", async () => {
           await api(`/api/ai/memory?id=${btn.dataset.id}`, { method: "DELETE" });
-          renderMemories();
+          render();
         });
       }),
     );
   };
-  renderMemories().catch(() => {
+  render().catch(() => {
     memList.innerHTML = `<div class="callout">记忆加载失败</div>`;
   });
 }
@@ -1611,12 +1613,31 @@ async function renderSettings() {
 // ---------------- 路由 ----------------
 
 function setActiveTab(view) {
-  document.querySelectorAll(".tab").forEach((t) =>
+  document.querySelectorAll(".tab[data-view]").forEach((t) =>
     t.classList.toggle("active", t.dataset.view === view));
+  // 记忆/设置都属于三点菜单，保持菜单按钮高亮
+  document.querySelector(".tab.menu-trigger")?.classList.toggle(
+    "active",
+    view === "memory" || view === "settings",
+  );
 }
+
+function toggleMenu(show) {
+  const menu = $("#settingsMenu .tab-menu");
+  const trigger = $("#settingsMenu .menu-trigger");
+  if (!menu || !trigger) return;
+  menu.classList.toggle("open", show);
+  trigger.setAttribute("aria-expanded", String(show));
+}
+
+// 点击三点菜单外部自动收起
+document.addEventListener("click", (e) => {
+  if (!e.target.closest("#settingsMenu")) toggleMenu(false);
+});
 
 async function route() {
   stopChatPolling(); // 切换视图即停止对话轮询（hashchange 触发 route）
+  toggleMenu(false); // 路由切换时收起三点菜单
   const hash = location.hash || "#/dashboard";
   const [, view, arg] = hash.split("/");
   try {
@@ -1631,6 +1652,7 @@ async function route() {
     else if (view === "upload") { setActiveTab("upload"); renderUpload(); }
     else if (view === "ai") { setActiveTab("ai"); await renderAI(); }
     else if (view === "chat") { setActiveTab("chat"); await renderChat(arg ? Number(arg) : null); }
+    else if (view === "memory") { setActiveTab("memory"); await renderMemory(); }
     else if (view === "settings") { setActiveTab("settings"); await renderSettings(); }
     else { setActiveTab("dashboard"); await renderDashboard(); }
   } catch (e) {
@@ -1639,6 +1661,13 @@ async function route() {
 }
 
 $("#tabs").addEventListener("click", (e) => {
+  const trigger = e.target.closest(".menu-trigger");
+  if (trigger) {
+    e.preventDefault();
+    const menu = $("#settingsMenu .tab-menu");
+    toggleMenu(!menu.classList.contains("open"));
+    return;
+  }
   const v = e.target.closest(".tab")?.dataset.view;
   if (v) location.hash = `#/${v}`;
 });

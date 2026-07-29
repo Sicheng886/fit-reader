@@ -74,7 +74,7 @@ body {
   display: block;
 }
 
-.tabs { display: flex; gap: 4px; height: 100%; }
+.tabs { display: flex; gap: 4px; height: 100%; align-items: center; }
 .tab {
   appearance: none;
   background: none;
@@ -88,9 +88,46 @@ body {
   padding: 0 16px;
   cursor: pointer;
   transition: color 0.15s, border-color 0.15s;
+  height: 100%;
 }
 .tab:hover { color: var(--text); }
 .tab.active { color: var(--volt); border-bottom-color: var(--volt); }
+
+.tab-menu-wrap { position: relative; height: 100%; }
+.tab.menu-trigger {
+  padding: 0 12px;
+  font-size: 18px;
+  line-height: 1;
+}
+.tab-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 120px;
+  display: none;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+  z-index: 100;
+  overflow: hidden;
+}
+.tab-menu.open { display: flex; }
+.tab-menu-item {
+  display: block;
+  padding: 11px 16px;
+  color: var(--text);
+  font-size: 13px;
+  text-decoration: none;
+  transition: background 0.12s, color 0.12s;
+  border-bottom: 1px solid var(--line-soft);
+}
+.tab-menu-item:last-child { border-bottom: none; }
+.tab-menu-item:hover {
+  background: var(--panel-2);
+  color: var(--volt);
+}
 
 .athlete-chip {
   margin-left: auto;
@@ -99,6 +136,7 @@ body {
   color: var(--faint);
   letter-spacing: 0.04em;
   white-space: nowrap;
+  padding: 0 8px;
 }
 .athlete-chip b { color: var(--muted); }
 

@@ -14,11 +14,17 @@
         <button class="tab" data-view="dashboard">概览</button>
         <button class="tab" data-view="activities">训练</button>
         <button class="tab" data-view="upload">上传</button>
-        <button class="tab" data-view="ai">AI 分析</button>
+        <button class="tab" data-view="ai">AI 报告</button>
         <button class="tab" data-view="chat">对话</button>
-        <button class="tab" data-view="settings">设置</button>
+        <div class="athlete-chip" id="athleteChip"></div>
+        <div class="tab-menu-wrap" id="settingsMenu">
+          <button class="tab menu-trigger" aria-haspopup="true" aria-expanded="false" title="更多">⋮</button>
+          <div class="tab-menu" hidden>
+            <a class="tab-menu-item" href="#/memory" data-view="memory">记忆</a>
+            <a class="tab-menu-item" href="#/settings" data-view="settings">设置</a>
+          </div>
+        </div>
       </nav>
-      <div class="athlete-chip" id="athleteChip"></div>
     </header>
     <main id="app"></main>
     <script src="/app.js"></script>
