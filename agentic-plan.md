@@ -261,7 +261,7 @@ AI 可能记错或过时，用户必须有最终控制权：
 6. 测试：db 记忆 CRUD 单测；web 端到端（memories 接口 + save_memory 工具经 mock AI 触发）；`npm test` 全绿。
 7. 验证 + `npm version minor` + commit。
 
-### [ ] 阶段四：收尾
+### [x] 阶段四：收尾
 
 1. 用 `input/` 真实 FIT 文件 + 真实 AI 配置做端到端人工验证（生成复盘报告观察工具调用日志；直接对话观察取数与记忆保存）。
 2. 更新 README（AI 分析一节）、AGENTS.md（代码结构、测试策略、安全考虑）。

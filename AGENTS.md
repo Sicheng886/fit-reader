@@ -136,7 +136,7 @@ summary.json 字段（喂 AI 的汇总结构，records.csv 列见上文「项目
 
 ## 已知注意事项
 
-- **旧版《FIT训练分析项目README.md》已删除**（P0–P4 路线图全部落地后，仍有价值的输出格式与算法口径并入本文档「输出格式与指标算法口径」一节；面向用户的使用说明以根目录 `README.md` 为准，Docker 部署见 `DEPLOY.md`）。路线图完成情况：P0（批量处理、FTP 自动估算、间歇识别、爬坡段提取、踏频-功率联合分析）、P1（SQLite 训练库、CTL/ATL/TSB 写入 `athlete_context`、月汇总 `--monthly`、趋势图 `--trend`；因训练频率低，路线图的“周汇总”落地为月汇总）、P2（提示词模板库 `src/prompts.js` + 四个提示词命令 `--review`/`--plan`/`--taper`/`--compare`）、P3（跑步/游泳适配、开发者字段统计、损坏文件缺失计数、合成 FIT 生成器 + node:test 回归测试）、P4（AI API 对接 + Web 界面）均已完成；TrainingPeaks/intervals.icu 对接未做。当前演进方向见 `agentic-plan.md`（AI 顾问 agentic 查询 / 对话持久化 / 记忆，分四阶段实施）。
+- **旧版《FIT训练分析项目README.md》已删除**（P0–P4 路线图全部落地后，仍有价值的输出格式与算法口径并入本文档「输出格式与指标算法口径」一节；面向用户的使用说明以根目录 `README.md` 为准，Docker 部署见 `DEPLOY.md`）。路线图完成情况：P0（批量处理、FTP 自动估算、间歇识别、爬坡段提取、踏频-功率联合分析）、P1（SQLite 训练库、CTL/ATL/TSB 写入 `athlete_context`、月汇总 `--monthly`、趋势图 `--trend`；因训练频率低，路线图的“周汇总”落地为月汇总）、P2（提示词模板库 `src/prompts.js` + 四个提示词命令 `--review`/`--plan`/`--taper`/`--compare`）、P3（跑步/游泳适配、开发者字段统计、损坏文件缺失计数、合成 FIT 生成器 + node:test 回归测试）、P4（AI API 对接 + Web 界面）均已完成；TrainingPeaks/intervals.icu 对接未做。agentic 演进（`agentic-plan.md`：AI 顾问 agentic 查询 / 对话持久化与直接对话 / AI 记忆）四个阶段已全部完成并验证。
 - **海拔单位隐藏 bug 已修复**（P3 过程中发现）：解析器按 `lengthUnit: "km"` 会把海拔/爬升缩放成 km，此前海拔输出与爬坡检测被压低 1000 倍（MAGENE 海拔恒 0 故从未暴露），现已统一换回米。
 - 没有 CI、没有部署流程——这是一个纯本地脚本项目（git 仅用于本地版本控制）。
 - 项目源码统一使用 ESM（`.js` + `"type": "module"`），`fit-file-parser` 为 CommonJS 包，通过默认导入（`import FitParser from "fit-file-parser"`）由 Node 的 CJS-ESM 互操作处理。
@@ -145,5 +145,5 @@ summary.json 字段（喂 AI 的汇总结构，records.csv 列见上文「项目
 
 ## 安全考虑
 
-- 仅读取本地文件；唯一的网络访问是 AI 报告调用用户自配的 OpenAI 兼容接口；FIT 文件视为不可信输入，解析器以 `force: true` 容错运行。
+- 仅读取本地文件；唯一的网络访问是 AI 报告/对话调用用户自配的 OpenAI 兼容接口（agentic 工具全部本地执行，无新增外发通道）；FIT 文件视为不可信输入，解析器以 `force: true` 容错运行。
 - AI 密钥存本地训练库 settings 表（`db/` 已被 `.gitignore` 排除），仅随 AI 请求发往用户配置的接口地址；无其它密钥或环境变量配置（`FIT_DB_PATH` / `FIT_INPUT_DIR` / `FIT_OUTPUT_DIR` / `PORT` 仅为部署/测试隔离参数）。
