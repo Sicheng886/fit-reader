@@ -214,7 +214,7 @@ test("AI 接口（已配置密钥 + mock 服务）走 agentic 工具调用完成
 
     // 首轮请求：带 tools 定义，提示词含工具使用指引段
     assert.ok(Array.isArray(seenBodies[0].tools), "首轮应挂 tools");
-    assert.match(seenBodies[0].messages[0].content, /数据查询工具/);
+    assert.match(seenBodies[0].messages[0].content, /数据查询与计算工具/);
     // 次轮请求：tool 结果以 role:"tool" 回填（get_athlete_profile 返回含 ftp_watts）
     const toolMsg = seenBodies[1].messages.at(-1);
     assert.equal(toolMsg.role, "tool");
@@ -703,7 +703,7 @@ test("AI 直接对话（mock 服务）：202 → 轮询取回答，系统段与�
     const msgs = seenBodies[0].messages;
     assert.match(msgs[0].content, /自行车教练/);
     assert.match(msgs[0].content, /指标口径/);
-    assert.match(msgs[0].content, /数据查询工具/);
+    assert.match(msgs[0].content, /数据查询与计算工具/);
     assert.equal(msgs.at(-1).role, "user");
     assert.equal(msgs.at(-1).content, "今天该怎么练？");
     assert.ok(!msgs.some((m) => m.content === ""), "pending 占位不进入上下文");
@@ -970,6 +970,93 @@ test("AI 记忆 e2e：save_memory 工具入库带 source，memories 接口与删
     assert.equal(delBad.status, 400);
   } finally {
     if (memId != null) deleteMemory(memId);
+    Object.assign(AI_CONFIG, saved);
+    mockAi.close();
+  }
+});
+
+test("simulate_form 工具 e2e：mock AI 发起负荷推演，结果回填且回答落库", async () => {
+  // mock chat/completions：首轮返回 simulate_form tool_calls，次轮返回正文
+  const seenBodies = [];
+  const mockAi = http.createServer((req, res) => {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      seenBodies.push(JSON.parse(body));
+      res.setHeader("Content-Type", "application/json");
+      const msg =
+        seenBodies.length === 1
+          ? {
+              content: null,
+              tool_calls: [
+                {
+                  id: "call_s1",
+                  type: "function",
+                  function: {
+                    name: "simulate_form",
+                    arguments: JSON.stringify({
+                      plan: [
+                        { date: "2026-08-01", tss: 60 },
+                        { date: "2026-08-02", tss: 0 },
+                        { date: "2026-08-03", tss: 80 },
+                      ],
+                    }),
+                  },
+                },
+              ],
+            }
+          : { content: "按计划推演，CTL 会缓慢上升，无风险" };
+      res.end(JSON.stringify({ choices: [{ message: msg }] }));
+    });
+  });
+  await new Promise((r) => mockAi.listen(0, "127.0.0.1", r));
+  const saved = { ...AI_CONFIG };
+  Object.assign(AI_CONFIG, {
+    api_key: "test-key",
+    base_url: `http://127.0.0.1:${mockAi.address().port}/v1`,
+    stream: false,
+    agentic: true,
+  });
+  try {
+    const resp = await fetch(base + "/api/ai/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "chat", message: "接下来三天这么练，状态会怎么变" }),
+    });
+    assert.equal(resp.status, 202);
+    const { chat_id } = await resp.json();
+    let detail = null;
+    for (let i = 0; i < 50; i++) {
+      const r = await fetch(`${base}/api/ai/chat?id=${chat_id}`);
+      if (r.status === 200) {
+        detail = await r.json();
+        break;
+      }
+      await new Promise((r2) => setTimeout(r2, 100));
+    }
+    assert.ok(detail, "应轮询到完成的对话");
+
+    // 首轮请求应携带 simulate_form / generate_workout 工具定义
+    const toolNames = (seenBodies[0].tools ?? []).map((t) => t.function.name);
+    assert.ok(toolNames.includes("simulate_form"));
+    assert.ok(toolNames.includes("generate_workout"));
+
+    // 次轮请求：推演结果以 role:"tool" 回填（含 projection / end_form / risk_flags）
+    const toolMsg = seenBodies[1].messages.at(-1);
+    assert.equal(toolMsg.role, "tool");
+    assert.equal(toolMsg.tool_call_id, "call_s1");
+    const payload = JSON.parse(toolMsg.content.replace("（结果已截断）", ""));
+    assert.equal(payload.projection.length, 3);
+    assert.deepEqual(payload.projection[0].slice(1), [1.4, 8.6, -7.1]); // start 0/0：ctl=60/42，atl=60/7，tsb 取未舍入差值
+    assert.ok(payload.end_form);
+    assert.ok(Array.isArray(payload.risk_flags));
+
+    // 最终回答落库
+    const last = detail.messages.at(-1);
+    assert.equal(last.role, "assistant");
+    assert.equal(last.status, "completed");
+    assert.match(last.content, /CTL 会缓慢上升/);
+  } finally {
     Object.assign(AI_CONFIG, saved);
     mockAi.close();
   }

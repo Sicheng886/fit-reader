@@ -35,6 +35,52 @@ export const AGENTIC = {
   list_limit: 50, // list_activities 返回条数上限
   form_max_days: 120, // get_form_series 天数上限
   monthly_max: 24, // get_monthly_summary 月数上限
+  simulate_max_days: 60, // simulate_form 推演天数上限（紧凑数组输出不超截断线）
+};
+
+// ============ 未来负荷推演风险阈值（src/planning.js simulateForm 使用） ============
+export const FORM_SIMULATION = {
+  tsb_low: -30, // TSB 低于该值视为深度疲劳
+  tsb_low_days: 7, // TSB 持续低于阈值达到该天数触发警示
+  ctl_ramp_pct: 10, // CTL 周增幅上限（%），超出触发过度训练风险警示
+  tsb_recovery: -20, // generateWorkout 中 TSB 低于该值自动降级为恢复课
+};
+
+// ============ 单次课表模板（src/planning.js generateWorkout 使用） ============
+// 功率按 FTP 百分比；时长单位分钟；TSS 估算按各段 时长秒 × IF² / 36 逐段求和
+export const WORKOUT_TEMPLATES = {
+  recovery: {
+    label: "恢复骑",
+    steady: { pct: [0.4, 0.55], if: 0.5 }, // 全程稳态，无间歇组
+  },
+  endurance: {
+    label: "有氧耐力",
+    steady: { pct: [0.56, 0.75], if: 0.68 },
+  },
+  sweet_spot: {
+    label: "甜区",
+    warmup_min: 15,
+    set: { pct: [0.88, 0.94], if: 0.91, min_min: 10, max_min: 20 },
+    reps: [2, 3],
+    rest_min: 5,
+    cooldown_min: 10,
+  },
+  threshold: {
+    label: "阈值",
+    warmup_min: 15,
+    set: { pct: [0.95, 1.05], if: 1.0, min_min: 10, max_min: 15 },
+    reps: [2, 3],
+    rest_min: 5,
+    cooldown_min: 10,
+  },
+  vo2max: {
+    label: "VO2max",
+    warmup_min: 15,
+    set: { pct: [1.06, 1.2], if: 1.13, min_min: 3, max_min: 5 },
+    reps: [4, 6],
+    rest_min: null, // null = 组间休息与单组等时
+    cooldown_min: 10,
+  },
 };
 
 // ============ 功率分区（Coggan 7 区，按 FTP 百分比） ============

@@ -1,9 +1,10 @@
 /**
  * tools.js
  * AI agentic 工具集（function calling）：工具 JSON schema 定义 + 参数校验 + 执行分发。
- * 除 save_memory 外全部为只读查询，内部调用 db.js 既有查询函数与 records.js，
- * 不重复实现查询逻辑；save_memory 只写 ai_memories 表（带 source 场景标记），
- * 不触碰 activities/settings。
+ * 三类工具：只读查询（调用 db.js 既有查询函数与 records.js，不重复实现查询逻辑）、
+ * 纯计算（simulate_form / generate_workout → src/planning.js 纯函数，其中 simulate_form
+ * 在未显式给起始 CTL/ATL 时读一次训练库当前值）、写（save_memory 只写 ai_memories 表，
+ * 带 source 场景标记，不触碰 activities/settings）。
  *
  * 约定：
  * - 所有工具返回 JSON 字符串；业务错误（file_name 不存在、参数非法）返回
@@ -21,12 +22,14 @@ import {
   getAthleteState,
   getProfile,
   cyclingSummariesSince,
+  computeForm,
   saveMemory,
 } from "./db.js";
 import { compactSummaryForPrompt } from "./prompts.js";
 import { loadRecords, safeName } from "./records.js";
 import { estimateFtpFromHistory } from "./ftp.js";
-import { AGENTIC, ATHLETE, FTP_ESTIMATION } from "./settings.js";
+import { simulateForm, generateWorkout } from "./planning.js";
+import { AGENTIC, ATHLETE, FTP_ESTIMATION, FORM_SIMULATION, WORKOUT_TEMPLATES } from "./settings.js";
 
 // 输出目录解析规则与 server.js 一致（FIT_OUTPUT_DIR 覆盖，默认 ./output，测试隔离用）
 const OUTPUT_DIR = path.resolve(process.env.FIT_OUTPUT_DIR || "output");
@@ -125,6 +128,55 @@ export const TOOL_DEFS = [
       description:
         "基于最近窗口期骑行的功率峰曲线与心率交叉验证估算 FTP（含置信度与数据需求），用户问 FTP 是否该调整时使用。",
       parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "simulate_form",
+      description:
+        "未来负荷推演：给出未来逐日计划 TSS，按当前 CTL/ATL 推演 CTL/ATL/TSB 走势并标注风险（深度疲劳/CTL 周增幅过高）。用户问「如果我每周加练 X 会怎样」「赛前怎么减量」时使用。",
+      parameters: {
+        type: "object",
+        properties: {
+          plan: {
+            type: "array",
+            description: `未来逐日计划（无训练日 tss=0），最多 ${AGENTIC.simulate_max_days} 天`,
+            items: {
+              type: "object",
+              properties: {
+                date: { type: "string", description: "日期 YYYY-MM-DD" },
+                tss: { type: "number", description: "当日计划 TSS（0–1000）" },
+              },
+              required: ["date", "tss"],
+            },
+          },
+          start_ctl: { type: "number", description: "起始 CTL；缺省取训练库当前值" },
+          start_atl: { type: "number", description: "起始 ATL；缺省取训练库当前值" },
+        },
+        required: ["plan"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "generate_workout",
+      description:
+        "按目标与可用时长生成单次课表：热身/主组（组数/时长/功率瓦特区间/组间休息）/冷身 + TSS 估算。用户问「今天有 X 小时，练什么」时使用。",
+      parameters: {
+        type: "object",
+        properties: {
+          target: {
+            type: "string",
+            enum: ["recovery", "endurance", "sweet_spot", "threshold", "vo2max"],
+            description: "课表类型：recovery 恢复 / endurance 有氧耐力 / sweet_spot 甜区 / threshold 阈值 / vo2max",
+          },
+          duration_minutes: { type: "integer", description: "可用总时长（分钟，15–300）" },
+          tsb: { type: "number", description: "当前 TSB（可选）；过低时自动降级为恢复课" },
+        },
+        required: ["target", "duration_minutes"],
+      },
     },
   },
   {
@@ -242,6 +294,53 @@ function toolEstimateFtp() {
   return toResult(estimateFtpFromHistory(acts, ATHLETE, FTP_ESTIMATION));
 }
 
+/** simulate_form：未来负荷推演（纯计算；起始 CTL/ATL 缺省时读一次训练库当前值） */
+function toolSimulateForm(args) {
+  const plan = args?.plan;
+  if (!Array.isArray(plan) || !plan.length) return errResult("plan 需为非空数组 [{date, tss}]");
+  if (plan.length > AGENTIC.simulate_max_days)
+    return errResult(`plan 最多 ${AGENTIC.simulate_max_days} 天`);
+  const clean = [];
+  for (const d of plan) {
+    if (!d || !DATE_RE.test(d.date ?? "")) return errResult("plan 中 date 需为 YYYY-MM-DD");
+    const tss = Number(d.tss);
+    if (!Number.isFinite(tss)) return errResult("plan 中 tss 需为数值");
+    clean.push({ date: d.date, tss: Math.min(1000, Math.max(0, tss)) });
+  }
+  clean.sort((a, b) => (a.date < b.date ? -1 : 1));
+  let startCtl = Number(args?.start_ctl);
+  let startAtl = Number(args?.start_atl);
+  if (!Number.isFinite(startCtl) || !Number.isFinite(startAtl)) {
+    const today = new Date().toISOString().slice(0, 10);
+    const cur = computeForm(today); // 训练库为空时返回 null，按 0 起步
+    startCtl = cur?.ctl ?? 0;
+    startAtl = cur?.atl ?? 0;
+  }
+  const { projection, risk_flags, end_form } = simulateForm({
+    startCtl,
+    startAtl,
+    plan: clean,
+    cfg: FORM_SIMULATION,
+  });
+  return toResult({ start: { ctl: startCtl, atl: startAtl }, projection, risk_flags, end_form });
+}
+
+/** generate_workout：单次课表生成（纯计算，FTP 取 ATHLETE 当前生效值） */
+function toolGenerateWorkout(args) {
+  const duration = clampInt(args?.duration_minutes, 15, 300, NaN);
+  if (!Number.isFinite(duration)) return errResult("duration_minutes 需为 15–300 的整数");
+  const result = generateWorkout({
+    target: args?.target,
+    durationMinutes: duration,
+    ftpWatts: ATHLETE.ftp_watts,
+    tsb: args?.tsb != null ? Number(args.tsb) : null,
+    templates: WORKOUT_TEMPLATES,
+    tsbRecovery: FORM_SIMULATION.tsb_recovery,
+  });
+  if (result.error) return errResult(result.error);
+  return toResult({ ftp_watts: ATHLETE.ftp_watts, ...result });
+}
+
 /** save_memory：写 ai_memories（唯一写工具）；ctx.source 为场景标记（review/plan/.../chat） */
 function toolSaveMemory(args, ctx) {
   const id = saveMemory({
@@ -265,6 +364,8 @@ const TOOL_IMPL = {
   get_monthly_summary: toolGetMonthlySummary,
   get_athlete_profile: toolGetAthleteProfile,
   estimate_ftp: toolEstimateFtp,
+  simulate_form: toolSimulateForm,
+  generate_workout: toolGenerateWorkout,
   save_memory: toolSaveMemory,
 };
 

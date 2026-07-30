@@ -20,7 +20,8 @@ import {
 } from "../index.js";
 import { estimateFtpFromHistory } from "../src/ftp.js";
 import { compactSummaryForPrompt } from "../src/prompts.js";
-import { ATHLETE } from "../src/settings.js";
+import { simulateForm, generateWorkout } from "../src/planning.js";
+import { ATHLETE, FORM_SIMULATION, WORKOUT_TEMPLATES } from "../src/settings.js";
 
 // 构造逐秒记录对象的辅助函数
 const rec = (i, fields = {}) => ({
@@ -306,4 +307,149 @@ test("compactSummaryForPrompt: 不修改原对象", () => {
   };
   compactSummaryForPrompt(s);
   assert.equal(s.anomalies.length, 8);
+});
+
+// ============ src/planning.js：未来负荷推演 + 课表生成 ============
+
+test("simulateForm: TSS 全 0 时 CTL/ATL 按 1/42、1/7 衰减", () => {
+  const { projection, end_form } = simulateForm({
+    startCtl: 42,
+    startAtl: 14,
+    plan: [{ date: "2026-08-01", tss: 0 }],
+    cfg: FORM_SIMULATION,
+  });
+  // ctl = 42 + (0-42)/42 = 41；atl = 14 + (0-14)/7 = 12；tsb = 29
+  assert.deepEqual(projection[0], ["2026-08-01", 41, 12, 29]);
+  assert.deepEqual(end_form, { ctl: 41, atl: 12, tsb: 29 });
+});
+
+test("simulateForm: 恒定 TSS 下 CTL/ATL 向该 TSS 收敛", () => {
+  const plan = Array.from({ length: 60 }, (_, i) => ({
+    date: `2026-08-${String(i + 1).padStart(2, "0")}`,
+    tss: 100,
+  }));
+  const { end_form } = simulateForm({ startCtl: 0, startAtl: 0, plan, cfg: FORM_SIMULATION });
+  assert.ok(end_form.ctl > 70 && end_form.ctl < 100, `ctl 应向 100 收敛，实际 ${end_form.ctl}`);
+  assert.ok(end_form.atl > 90 && end_form.atl <= 100, `atl 应快速逼近 100，实际 ${end_form.atl}`);
+});
+
+test("simulateForm: TSB 持续低于 -30 达 7 天触发深度疲劳警示", () => {
+  // atl 恒 50（每日 tss=50 保持），ctl 从 0 缓慢爬升，前 7 天 tsb 均 < -30
+  const plan = Array.from({ length: 7 }, (_, i) => ({
+    date: `2026-08-0${i + 1}`,
+    tss: 50,
+  }));
+  const { risk_flags } = simulateForm({ startCtl: 0, startAtl: 50, plan, cfg: FORM_SIMULATION });
+  const flag = risk_flags.find((f) => f.type === "tsb_low_sustained");
+  assert.ok(flag, "应触发 tsb_low_sustained");
+  assert.equal(flag.days, 7);
+  assert.equal(flag.start, "2026-08-01");
+  assert.equal(flag.end, "2026-08-07");
+});
+
+test("simulateForm: CTL 周增幅超 10% 触发过度训练警示", () => {
+  // start ctl=10，每日 tss=200 → ctl 快速拉升，周增幅远超 10%
+  const plan = Array.from({ length: 14 }, (_, i) => ({
+    date: `2026-08-${String(i + 1).padStart(2, "0")}`,
+    tss: 200,
+  }));
+  const { risk_flags } = simulateForm({ startCtl: 10, startAtl: 10, plan, cfg: FORM_SIMULATION });
+  assert.ok(risk_flags.some((f) => f.type === "ctl_ramp_high"), "应触发 ctl_ramp_high");
+});
+
+test("simulateForm: 温和计划不触发任何风险", () => {
+  // start ctl=50，每日 tss=50 → ctl/atl 稳定在 50 附近，tsb≈0
+  const plan = Array.from({ length: 14 }, (_, i) => ({
+    date: `2026-08-${String(i + 1).padStart(2, "0")}`,
+    tss: 50,
+  }));
+  const { risk_flags } = simulateForm({ startCtl: 50, startAtl: 50, plan, cfg: FORM_SIMULATION });
+  assert.deepEqual(risk_flags, []);
+});
+
+test("generateWorkout: 稳态课（endurance）全程一个强度，瓦数与 TSS 口径正确", () => {
+  const w = generateWorkout({
+    target: "endurance",
+    durationMinutes: 60,
+    ftpWatts: 200,
+    templates: WORKOUT_TEMPLATES,
+    tsbRecovery: FORM_SIMULATION.tsb_recovery,
+  });
+  assert.equal(w.steady.minutes, 60);
+  assert.deepEqual(w.steady.power_watts, [112, 150]); // 56%–75% × 200
+  // TSS = 3600s × 0.68² / 36 = 46.2
+  assert.equal(w.estimated_tss, 46.2);
+});
+
+test("generateWorkout: 甜区课组装进 60 分钟且各段合计等于总时长", () => {
+  const w = generateWorkout({
+    target: "sweet_spot",
+    durationMinutes: 60,
+    ftpWatts: 200,
+    templates: WORKOUT_TEMPLATES,
+    tsbRecovery: FORM_SIMULATION.tsb_recovery,
+  });
+  assert.equal(w.warmup.minutes, 15);
+  assert.equal(w.main_sets.reps, 2);
+  assert.equal(w.main_sets.set_minutes, 15);
+  assert.equal(w.main_sets.rest_minutes, 5);
+  assert.deepEqual(w.main_sets.power_watts, [176, 188]); // 88%–94% × 200
+  const total =
+    w.warmup.minutes +
+    w.main_sets.reps * w.main_sets.set_minutes +
+    (w.main_sets.reps - 1) * w.main_sets.rest_minutes +
+    w.cooldown.minutes;
+  assert.equal(total, 60);
+  // TSS = 15min@0.5 + 2×15min@0.91 + 5min@0.5 + 10min@0.5 ≈ 53.9
+  assert.equal(w.estimated_tss, 53.9);
+});
+
+test("generateWorkout: VO2max 组间休息与单组等时", () => {
+  const w = generateWorkout({
+    target: "vo2max",
+    durationMinutes: 50,
+    ftpWatts: 200,
+    templates: WORKOUT_TEMPLATES,
+    tsbRecovery: FORM_SIMULATION.tsb_recovery,
+  });
+  assert.equal(w.main_sets.reps, 4);
+  assert.equal(w.main_sets.set_minutes, 3);
+  assert.equal(w.main_sets.rest_minutes, 3); // 等时休息
+  assert.deepEqual(w.main_sets.power_watts, [212, 240]); // 106%–120% × 200
+});
+
+test("generateWorkout: 时长装不下最小组数时报错", () => {
+  const w = generateWorkout({
+    target: "sweet_spot",
+    durationMinutes: 20,
+    ftpWatts: 200,
+    templates: WORKOUT_TEMPLATES,
+    tsbRecovery: FORM_SIMULATION.tsb_recovery,
+  });
+  assert.match(w.error, /装不下/);
+});
+
+test("generateWorkout: TSB 过低自动降级为恢复课并附说明", () => {
+  const w = generateWorkout({
+    target: "threshold",
+    durationMinutes: 60,
+    ftpWatts: 200,
+    tsb: -25,
+    templates: WORKOUT_TEMPLATES,
+    tsbRecovery: FORM_SIMULATION.tsb_recovery,
+  });
+  assert.equal(w.target, "recovery");
+  assert.ok(w.steady, "降级后应为稳态恢复课");
+  assert.match(w.notes[0], /自动降级为恢复骑/);
+});
+
+test("generateWorkout: 未知课表类型报错", () => {
+  const w = generateWorkout({
+    target: "hill_reps",
+    durationMinutes: 60,
+    ftpWatts: 200,
+    templates: WORKOUT_TEMPLATES,
+    tsbRecovery: FORM_SIMULATION.tsb_recovery,
+  });
+  assert.match(w.error, /未知课表类型/);
 });

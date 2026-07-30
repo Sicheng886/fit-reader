@@ -54,9 +54,9 @@ function jsonBlock(obj) {
  * 工具清单与 src/tools.js 的 TOOL_DEFS 对应。
  */
 export function buildAgenticSection() {
-  return `## 数据查询工具
+  return `## 数据查询与计算工具
 
-你可以通过工具调用主动查询本应用训练库中的数据，不必只依赖上方预装的数据。可用工具：
+你可以通过工具调用主动查询本应用训练库中的数据、做负荷推演与课表计算，不必只依赖上方预装的数据。可用工具：
 - list_activities：训练简明清单（日期/类型/时长/TSS/NP/IF），可按日期范围/运动类型/分类过滤——这是"目录页"
 - get_activity_summary：按 file_name 取单次训练完整汇总指标（NP/IF/TSS/分区/峰功率/心率漂移/备注等）
 - get_activity_records：按 file_name 取逐秒时序（功率/心率/踏频等），可用 start_sec/end_sec 只取时间窗片段
@@ -64,6 +64,8 @@ export function buildAgenticSection() {
 - get_monthly_summary：逐月训练汇总（长期负荷趋势）
 - get_athlete_profile：骑手参数（FTP/最大心率/体重）与用户身份、训练目标
 - estimate_ftp：基于历史骑行估算 FTP（含置信度）
+- simulate_form：未来负荷推演——给出逐日计划 TSS，预测 CTL/ATL/TSB 走势与风险（"每周加练会怎样"、赛前减量评估）
+- generate_workout：按目标（recovery/endurance/sweet_spot/threshold/vo2max）与可用时长生成单次课表（功率瓦特区间/组数/TSS 估算）
 
 使用规则：
 1. 只在上方预装数据不足以回答时才调用工具；能直接回答就不要调用。
