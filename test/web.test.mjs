@@ -869,9 +869,13 @@ test("AI 记忆滚动清理：超过 100 条先删最旧已取代，不足再删
   assert.equal(listMemories(5).length, 5);
 });
 
-test("buildMemorySection：空记忆返回空串，非空含日期标注 / 冲突规则 / save_memory 指引", () => {
-  assert.equal(buildMemorySection([]), "");
-  assert.equal(buildMemorySection(null), "");
+test("buildMemorySection：空记忆也注入主动记录指引，非空含日期标注 / 冲突规则 / save_memory 指引", () => {
+  // 空/无记忆时不再返回空串：指引必须始终注入，否则首次用户永远看不到记录规则
+  for (const empty of [buildMemorySection([]), buildMemorySection(null)]) {
+    assert.match(empty, /暂无记忆/);
+    assert.match(empty, /主动记录/);
+    assert.match(empty, /save_memory/);
+  }
   // listMemories 返回 id DESC，段落内应反转为时间正序
   const s = buildMemorySection([
     { id: 8, content: "用户目标改到 10 月 granfondo", category: "goal", created_at: "2026-07-02 09:00:00" },
