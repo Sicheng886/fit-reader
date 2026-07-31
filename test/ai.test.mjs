@@ -188,6 +188,47 @@ test("runAgentLoop: 首轮 tool_calls → 执行回填 → 次轮返回正文", 
   }
 });
 
+test("runAgentLoop: 中间轮写了长报告、末轮只剩收尾片段时返回最长正文", async () => {
+  // 复现线上问题：模型把完整报告写在带 tool_calls 的中间轮，
+  // 最后一轮只回"分析已完成，如需……"式片段——应以最长正文为准
+  const longReport = "# 训练复盘报告\n\n" + "详细分析内容。".repeat(50);
+  const wrapUp = "以上分析已完成。如需进一步帮助请告诉我。";
+  let callCount = 0;
+  const { server, port } = await startMockServer((_reqBody, res) => {
+    callCount++;
+    res.setHeader("Content-Type", "application/json");
+    let msg;
+    if (callCount === 1) msg = toolCallMsg("get_form_series", { days: 14 });
+    else if (callCount === 2)
+      msg = {
+        content: longReport, // 长报告与 tool_calls 同轮出现
+        tool_calls: [
+          {
+            id: "call_2",
+            type: "function",
+            function: { name: "get_form_series", arguments: "{}" },
+          },
+        ],
+      };
+    else msg = contentMsg(wrapUp);
+    res.end(JSON.stringify({ choices: [{ message: msg }] }));
+  });
+  const restore = useMockConfig(port);
+  try {
+    const text = await runAgentLoop(
+      [{ role: "user", content: "复盘" }],
+      FAKE_TOOLS,
+      async () => "{}",
+      { timeoutMs: 5000 },
+    );
+    assert.equal(text, longReport);
+    assert.equal(callCount, 3);
+  } finally {
+    restore();
+    server.close();
+  }
+});
+
 test("runAgentLoop: 轮数耗尽后去掉 tools 强制直接作答", async () => {
   const seenBodies = [];
   const { server, port } = await startMockServer((reqBody, res) => {

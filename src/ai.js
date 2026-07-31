@@ -241,7 +241,7 @@ export async function callAI(
  * @param {Array<object>} tools OpenAI tools JSON schema 数组
  * @param {(name: string, args: object) => Promise<string>|string} executeTool 工具执行器，返回 JSON 字符串
  * @param {{ onHeartbeat?: () => void, onToolCall?: (name, args, result) => void, onDegrade?: (errMsg: string) => void, timeoutMs?: number }} opts
- * @returns {Promise<string>} 模型最终正文
+ * @returns {Promise<string>} 模型最终正文（各轮 assistant 正文取最长者，防中间轮写报告末轮只剩收尾片段）
  */
 export async function runAgentLoop(
   messages,
@@ -282,6 +282,10 @@ export async function runAgentLoop(
   try {
     const history = [...messages];
     let toolsActive = useTools;
+    // 各轮 assistant 正文中最长的一份。模型偶尔会把完整报告写在带 tool_calls 的
+    // 中间轮、最后一轮只剩"分析已完成，如需……"式收尾片段——只取末轮正文会让
+    // 报告整体丢失，故以最长正文为准（中间轮通常是简短过渡语，不影响正常场景）。
+    let bestContent = null;
     for (let round = 0; round < maxRounds; round++) {
       let msg;
       try {
@@ -296,9 +300,11 @@ export async function runAgentLoop(
           throw e;
         }
       }
+      if (msg?.content && (bestContent == null || msg.content.length > bestContent.length))
+        bestContent = msg.content;
       const toolCalls = Array.isArray(msg?.tool_calls) ? msg.tool_calls : [];
       if (!toolCalls.length) {
-        if (msg?.content) return msg.content;
+        if (bestContent) return bestContent;
         throw new Error("AI API 返回为空");
       }
       // assistant 消息原样回填（含 tool_calls），再逐个执行并回填 tool 结果
@@ -335,7 +341,12 @@ export async function runAgentLoop(
       content: "工具调用次数已用完，请基于已获得的信息直接作答。",
     });
     const finalMsg = await callOnce(history, null);
-    if (finalMsg?.content) return finalMsg.content;
+    if (finalMsg?.content) {
+      // 强制作答轮同样参与最长正文比较
+      if (bestContent == null || finalMsg.content.length > bestContent.length)
+        bestContent = finalMsg.content;
+      return bestContent;
+    }
     throw new Error("AI API 返回为空");
   } catch (e) {
     const reason = ctrl.signal.reason?.message || e.message || "";

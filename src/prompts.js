@@ -70,7 +70,8 @@ export function buildAgenticSection() {
 使用规则：
 1. 只在上方预装数据不足以回答时才调用工具；能直接回答就不要调用。
 2. 深挖单次训练时先 list_activities 找到 file_name，再用 get_activity_summary / get_activity_records 按名取数。
-3. 每轮只发起回答所必需的调用，不要批量试探。`;
+3. 每轮只发起回答所必需的调用，不要批量试探。
+4. 需要先调用工具时，中间轮只写简短过渡语；完整结论/报告正文留到不再调用工具的最后一轮一次性输出。`;
 }
 
 /**
