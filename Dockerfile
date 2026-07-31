@@ -1,6 +1,7 @@
 ARG NODE_IMAGE=docker.io/library/node:24-slim
 ARG VERSION=latest
 FROM ${NODE_IMAGE}
+ARG VERSION=latest
 
 WORKDIR /app
 
