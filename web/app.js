@@ -14,16 +14,17 @@ import { renderAI } from "./js/views/ai.js";
 import { renderChat } from "./js/views/chat.js";
 import { renderSettings } from "./js/views/settings.js";
 import { renderMemory } from "./js/views/memory.js";
+import { renderAbout } from "./js/views/about.js";
 
 // ---------------- 路由 ----------------
 
 function setActiveTab(view) {
   document.querySelectorAll(".tab[data-view]").forEach((t) =>
     t.classList.toggle("active", t.dataset.view === view));
-  // 记忆/设置都属于三点菜单，保持菜单按钮高亮
+  // 记忆/设置/关于都属于三点菜单，保持菜单按钮高亮
   document.querySelector(".tab.menu-trigger")?.classList.toggle(
     "active",
-    view === "memory" || view === "settings",
+    view === "memory" || view === "settings" || view === "about",
   );
 }
 
@@ -59,6 +60,7 @@ async function route() {
     else if (view === "chat") { setActiveTab("chat"); await renderChat(arg ? Number(arg) : null); }
     else if (view === "memory") { setActiveTab("memory"); await renderMemory(); }
     else if (view === "settings") { setActiveTab("settings"); await renderSettings(); }
+    else if (view === "about") { setActiveTab("about"); renderAbout(); }
     else { setActiveTab("dashboard"); await renderDashboard(); }
   } catch (e) {
     app.innerHTML = `<div class="callout">加载失败：${esc(e.message)}</div>`;
