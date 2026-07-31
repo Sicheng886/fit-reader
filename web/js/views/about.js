@@ -35,6 +35,6 @@ export function renderAbout() {
 
     <div class="panel">
       <div class="panel-title">作者</div>
-      <p class="muted">Wally Yang</p>
+      <p class="muted">Wally Yang @ 2026</p>
     </div>`;
 }
