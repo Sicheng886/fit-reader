@@ -123,6 +123,11 @@ export const DATA_QUALITY = {
   record_gap_sec: 10, // 逐秒网格中连续缺失超过该时长，在 anomalies 中标注（损坏文件被跳过的记录会表现为这种缺口）
 };
 
+// ============ 功率峰曲线缺口容忍（index.js：fillShortGaps 插值后再算峰功率/FTP 估算） ============
+export const PEAK_CURVE = {
+  max_interp_gap_sec: 10, // 允许线性插值补齐的连续缺口上限（秒）：功率计偶发掉几秒不应让 20min 峰功率整体作废；更长缺口仍视为不连续
+};
+
 // ============ FTP 历史估算阈值（ftp.js：窗口内功率峰曲线 + 心率交叉验证） ============
 export const FTP_ESTIMATION = {
   window_days: 42, // 回看窗口（天）：取最近 6 周内的骑行做联合估算

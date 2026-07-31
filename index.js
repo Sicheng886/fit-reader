@@ -40,6 +40,7 @@ import {
   CLIMB_DETECTION,
   CADENCE_ANALYSIS,
   DATA_QUALITY,
+  PEAK_CURVE,
 } from "./src/settings.js";
 
 // ---------------- 工具函数 ----------------
@@ -113,6 +114,33 @@ export function peakAvg(powers, windowSec) {
     }
   }
   return best == null ? null : Math.round(best);
+}
+
+/**
+ * 短缺口线性插值：长度 ≤ maxGapSec 的连续 null 段按左右邻居线性补齐；
+ * 更长缺口、以及序列两端无邻居的 null 保持原样（仍视为不连续）。
+ * 用于峰功率曲线/FTP 估算前预处理，容忍功率计偶发掉秒；返回新数组，不改原数组。
+ */
+export function fillShortGaps(values, maxGapSec) {
+  const out = values.slice();
+  let i = 0;
+  while (i < out.length) {
+    if (out[i] != null) {
+      i++;
+      continue;
+    }
+    let j = i;
+    while (j < out.length && out[j] == null) j++;
+    const left = i > 0 ? out[i - 1] : null;
+    const right = j < out.length ? out[j] : null;
+    const len = j - i;
+    if (left != null && right != null && len <= maxGapSec) {
+      for (let k = i; k < j; k++)
+        out[k] = left + ((right - left) * (k - i + 1)) / (len + 1);
+    }
+    i = j;
+  }
+  return out;
 }
 
 /** 心率漂移（有氧解耦）：前后半程 效率因子(功率或速度/心率) 的相对变化，%。
@@ -636,7 +664,8 @@ export async function analyzeFile(input, outDir) {
   const expectedSec = t1 - t0 + 1;
   const missingSec = expectedSec - bySec.size;
 
-  // 功率峰曲线
+  // 功率峰曲线：短缺口先线性插值补齐再取峰（容忍功率计偶发掉秒，长缺口仍要求连续）
+  const powersFilled = fillShortGaps(powers, PEAK_CURVE.max_interp_gap_sec);
   const peakCurve = {};
   for (const [label, sec] of [
     ["5s", 5],
@@ -644,7 +673,7 @@ export async function analyzeFile(input, outDir) {
     ["5min", 300],
     ["20min", 1200],
   ]) {
-    const p = peakAvg(powers, sec);
+    const p = peakAvg(powersFilled, sec);
     if (p != null) peakCurve[label] = p;
   }
 
@@ -775,7 +804,7 @@ export async function analyzeFile(input, outDir) {
         ? Math.round((avgPower / ATHLETE.weight_kg) * 100) / 100
         : null,
       peak_curve: peakCurve,
-      ftp_estimate: estimateFtp(powers),
+      ftp_estimate: estimateFtp(powersFilled),
       zone_distribution_pct: zoneDistribution(
         powers,
         POWER_ZONES,

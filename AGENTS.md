@@ -52,7 +52,7 @@ node index.js input/MAGENE_C506SE_2026-07-17_202219_1273797.fit output/
 
 ### 骑手参数与算法阈值
 
-骑手参数（`ftp_watts` / `max_hr` / `weight_kg`）**以训练库为准**：存于 SQLite `settings` 表（key=`athlete`），由 Web 设置页（`POST /api/athlete`）维护；`src/settings.js` 里的 `ATHLETE` 只是出厂默认值（库中无配置时兜底）。`src/db.js` 的 `syncAthleteFromDb()` 把库值原地合并进 `ATHLETE` 导出对象（`analyzeFile()` 开头、`main()` 入口、`server.js` 启动时各调一次），`setAthlete()` 校验后写库并原地生效。功率/心率分区及间歇识别、爬坡提取、踏频分析、数据质量的算法阈值（`POWER_ZONES` / `HR_ZONES` / `INTERVAL_DETECTION` / `CLIMB_DETECTION` / `CADENCE_ANALYSIS` / `DATA_QUALITY`）仍集中在 `src/settings.js`。
+骑手参数（`ftp_watts` / `max_hr` / `weight_kg`）**以训练库为准**：存于 SQLite `settings` 表（key=`athlete`），由 Web 设置页（`POST /api/athlete`）维护；`src/settings.js` 里的 `ATHLETE` 只是出厂默认值（库中无配置时兜底）。`src/db.js` 的 `syncAthleteFromDb()` 把库值原地合并进 `ATHLETE` 导出对象（`analyzeFile()` 开头、`main()` 入口、`server.js` 启动时各调一次），`setAthlete()` 校验后写库并原地生效。功率/心率分区及间歇识别、爬坡提取、踏频分析、数据质量的算法阈值（`POWER_ZONES` / `HR_ZONES` / `INTERVAL_DETECTION` / `CLIMB_DETECTION` / `CADENCE_ANALYSIS` / `DATA_QUALITY` / `PEAK_CURVE`）仍集中在 `src/settings.js`。
 
 ## 代码结构
 
@@ -71,7 +71,7 @@ node index.js input/MAGENE_C506SE_2026-07-17_202219_1273797.fit output/
 
 | 区块 | 内容 |
 |---|---|
-| 工具函数 | `zoneOf` / `zoneDistribution`（区间分布）、`normalizedPower`（30s 滚动平均的四次方均根，缺口窗口不参与）、`peakAvg`（指定时长最大平均功率，要求窗口连续）、`hrDriftPct`（前后半程效率因子相对变化，功率或速度口径）、`findPowerGaps`（功率缺失 > 60s 检测）、`findMissingSpans`（整段记录缺失检测）、`collectDeveloperFields`（非标准字段数值统计）、`elevationGain`（带 1m 阈值去抖的累计爬升）、`avgField` / `maxField`（片段统计）。纯函数均 `export`，供单元测试直接引用；`main()` 仅当作为入口脚本运行时执行 |
+| 工具函数 | `zoneOf` / `zoneDistribution`（区间分布）、`normalizedPower`（30s 滚动平均的四次方均根，缺口窗口不参与）、`peakAvg`（指定时长最大平均功率，要求窗口连续）、`fillShortGaps`（≤阈值短缺口线性插值，峰功率曲线/FTP 估算前预处理）、`hrDriftPct`（前后半程效率因子相对变化，功率或速度口径）、`findPowerGaps`（功率缺失 > 60s 检测）、`findMissingSpans`（整段记录缺失检测）、`collectDeveloperFields`（非标准字段数值统计）、`elevationGain`（带 1m 阈值去抖的累计爬升）、`avgField` / `maxField`（片段统计）。纯函数均 `export`，供单元测试直接引用；`main()` 仅当作为入口脚本运行时执行 |
 | P0 分析函数 | `estimateFtp`（20min 峰功率 × 0.95 估算 FTP 并给更新建议）、`detectIntervals`（≥105% FTP 过阈段识别 + 间歇组统计）、`detectClimbs`（30s 窗口坡度 ≥3% 的爬坡段提取）、`cadencePowerAnalysis`（发力时段踏频习惯与踏频-功率相关性） |
 | 单文件流程 `analyzeFile()` | ① 解析 FIT（`force: true`, `km/h`, `km`, `mode: "list"`；注意解析器会把海拔/爬升缩放成 km，代码统一换回米）→ ② 按秒重采样记录（缺口置 `null`，统计无时间戳丢弃数/缺失秒数）→ ③ 写 CSV → ④ 计算指标（含 P0 分析；跑步附加配速段、游泳解析 length 消息、无功率数据时省略 power 段并切换心率漂移为速度口径）→ ⑤ 训练库入库 + `athlete_context` 注入当日 CTL/ATL/TSB（失败仅警告不中断）→ ⑥ 写 summary JSON，返回结果 |
 | 查询命令 | `printMonthly()`（逐月汇总表）、`writeTrendHtml()`（自包含 HTML 趋势图：月 TSS 柱 + CTL/ATL/TSB 月末折线 + 指标解读脚注，原生 SVG 无外部库） |
@@ -83,7 +83,7 @@ node index.js input/MAGENE_C506SE_2026-07-17_202219_1273797.fit output/
 ## 版本控制约定（重要）
 
 - 项目使用 **git** 进行版本控制。**每次完成修改后（无论是代码、配置还是文档变更）都必须先提升 `package.json` 中的 `version` 字段，再执行 `git commit`**，并附上清晰描述本次变更内容的中文 commit message。
-- 当前版本：`1.5.2`。版本号遵循语义化版本（SemVer）：`MAJOR.MINOR.PATCH`，bug 修复/小调整升 PATCH，新增功能升 MINOR，破坏性改动升 MAJOR。
+- 当前版本：`1.5.3`。版本号遵循语义化版本（SemVer）：`MAJOR.MINOR.PATCH`，bug 修复/小调整升 PATCH，新增功能升 MINOR，破坏性改动升 MAJOR。
 - 推荐工作流：
   1. 完成修改并跑通 `npm test`。
   2. 运行 `npm version patch|minor|major --no-git-tag-version`（仅修改 `package.json` 与 `package-lock.json`，不自动提交、不打 tag）。
@@ -118,7 +118,7 @@ summary.json 字段（喂 AI 的汇总结构，records.csv 列见上文「项目
 - NP：30s 滚动平均 → 四次方均值 → 开四次方根（缺口窗口不参与）；IF = NP / FTP；TSS = 时长秒 × NP × IF / (FTP × 3600) × 100
 - 心率漂移（有氧解耦）：前后半程效率因子的相对变化；骑行用功率/心率，无功率数据时自动切换速度/心率
 - CTL = TSS 的 42 天指数加权（体能）；ATL = 7 天（疲劳）；TSB = CTL − ATL（状态）；缺天按 TSS=0 参与衰减
-- 峰功率曲线要求窗口数据连续；异常检测：功率缺失 >60s、整段记录缺失 ≥10s、心率跳变（相邻秒差 >25）
+- 峰功率曲线要求窗口数据连续，但允许 ≤10s 的短缺口先线性插值补齐再取峰（容忍功率计偶发掉秒，阈值见 src/settings.js `PEAK_CURVE.max_interp_gap_sec`；NP/分区/TSS 仍用原始序列）；异常检测：功率缺失 >60s、整段记录缺失 ≥10s、心率跳变（相邻秒差 >25）
 - FTP 自动估算：20min 峰功率 × 0.95（无连续 20min 窗口时省略）
 - 间歇识别：≥105% FTP 过阈段，≤10s 瞬时掉功率合并、<30s 丢弃；爬坡段：30s 窗口坡度 ≥3% 且爬升 ≥15m、长度 ≥300m；踏频-功率联合分析：仅统计 ≥75% FTP 发力时段，低踏频 <80rpm / 高踏频 >90rpm
 - 月度强度分布：低(Z1–Z2)/中(Z3–Z4)/高(Z5–Z7) 按时长加权；低≥75% 且高>中 → polarized，低>中>高 → pyramidal，其余 → sweet_spot

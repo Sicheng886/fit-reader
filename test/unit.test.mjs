@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 import {
   normalizedPower,
   peakAvg,
+  fillShortGaps,
   zoneDistribution,
   elevationGain,
   findPowerGaps,
@@ -60,6 +61,28 @@ test("peakAvg: 递增序列取窗口最大值，要求窗口连续", () => {
   withGap[50] = 500;
   withGap[55] = null;
   assert.equal(peakAvg(withGap, 10), 100);
+});
+
+test("fillShortGaps: 短缺口按左右邻居线性插值", () => {
+  const arr = [100, null, null, null, 160];
+  assert.deepEqual(fillShortGaps(arr, 3), [100, 115, 130, 145, 160]);
+  // 不改原数组
+  assert.deepEqual(arr, [100, null, null, null, 160]);
+});
+
+test("fillShortGaps: 超长缺口与两端无邻居的 null 保持原样", () => {
+  const longGap = [100, null, null, null, null, 200];
+  assert.deepEqual(fillShortGaps(longGap, 3), longGap); // 4s 缺口 > 上限 3s
+  const edges = [null, null, 100, 200, null];
+  assert.deepEqual(fillShortGaps(edges, 10), edges); // 两端无邻居不补
+});
+
+test("fillShortGaps + peakAvg: 掉秒不再让 20min 峰功率整体作废", () => {
+  // 1300 秒恒定 200W，中间掉 3 秒：原始序列无连续 20min 窗口，补齐后恢复
+  const arr = Array(1300).fill(200);
+  arr[600] = arr[601] = arr[602] = null;
+  assert.equal(peakAvg(arr, 1200), null);
+  assert.equal(peakAvg(fillShortGaps(arr, 10), 1200), 200);
 });
 
 test("zoneDistribution: 按基数比例分区并输出百分比", () => {
