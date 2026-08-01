@@ -130,12 +130,16 @@ ${list}
 4. 每条记忆 ≤500 字、用中文、写成带主语的完整陈述；同主题更新时用 supersedes_id 取代旧记忆（id 见上方 #标注）。`;
 }
 
-/** 统一拼装：角色 + 口径 + 用户背景（可选）+ 各数据段 + 问题清单 */
-function assemble(dataSections, questions, profile) {
+/**
+ * 统一拼装：角色 + 口径 + 专业知识库（可选）+ 用户背景（可选）+ 各数据段 + 问题清单。
+ * skills 为 src/skills.js buildSkillsSection() 的输出，仅服务端 AI 调用注入
+ * （CLI 提示词命令不传，保持原样）。
+ */
+function assemble(dataSections, questions, profile, skills) {
   return [
     ROLE,
     buildMetricGlossary(),
-    ...[buildProfileSection(profile), ...dataSections].filter(Boolean),
+    ...[skills, buildProfileSection(profile), ...dataSections].filter(Boolean),
     `## 请回答\n\n${questions.map((q, i) => `${i + 1}. ${q}`).join("\n")}`,
   ].join("\n\n");
 }
@@ -236,9 +240,10 @@ const CATEGORY_NAMES = {
 /**
  * 单次复盘：传入某次训练的 summary.json 对象。
  * 若 summary.activity.note 存在（用户在详情页填写的体感/路况备注），提示 AI 纳入考量；
- * profile 为用户背景与训练目标（可选，来自训练库 settings 表）。
+ * profile 为用户背景与训练目标（可选，来自训练库 settings 表）；
+ * skills 为专业知识库段（可选，仅服务端注入，见 src/skills.js）。
  */
-export function buildReviewPrompt(summary, profile) {
+export function buildReviewPrompt(summary, profile, skills) {
   const cat = summary?.activity?.category ?? "training";
   const catName = CATEGORY_NAMES[cat] ?? "训练";
   const note = String(summary?.activity?.note ?? "").trim();
@@ -264,6 +269,7 @@ export function buildReviewPrompt(summary, profile) {
       "给出 2-3 条下次同类训练的改进建议。",
     ],
     profile,
+    skills,
   );
 }
 
@@ -271,8 +277,9 @@ export function buildReviewPrompt(summary, profile) {
  * 周期规划：基于月汇总 + 逐周 CTL/ATL/TSB 走势 + 近期训练清单。
  * @param {{ months: object[], formSeries: object[], recentActivities: object[] }} data
  * @param {object} [profile] 用户背景与训练目标（可选）
+ * @param {string} [skills] 专业知识库段（可选，仅服务端注入）
  */
-export function buildPlanPrompt({ months, formSeries, recentActivities }, profile) {
+export function buildPlanPrompt({ months, formSeries, recentActivities }, profile, skills) {
   return assemble(
     [
       `## 逐月训练汇总\n\n${jsonBlock(months)}`,
@@ -287,6 +294,7 @@ export function buildPlanPrompt({ months, formSeries, recentActivities }, profil
       "中期（4-8 周）应侧重什么能力短板？依据峰功率曲线或间歇数据说明。",
     ],
     profile,
+    skills,
   );
 }
 
@@ -294,10 +302,12 @@ export function buildPlanPrompt({ months, formSeries, recentActivities }, profil
  * 赛前调整（减量 taper）。
  * @param {{ raceDate: string, daysLeft: number, form: object, formSeries: object[], recentActivities: object[] }} data
  * @param {object} [profile] 用户背景与训练目标（可选）
+ * @param {string} [skills] 专业知识库段（可选，仅服务端注入）
  */
 export function buildTaperPrompt(
   { raceDate, daysLeft, form, formSeries, recentActivities },
   profile,
+  skills,
 ) {
   return assemble(
     [
@@ -314,14 +324,16 @@ export function buildTaperPrompt(
       "指出当前数据中的风险点（如疲劳过深、CTL 太低、近期训练结构问题）。",
     ],
     profile,
+    skills,
   );
 }
 
 /**
  * 两次训练对比：传入两个 summary.json 对象。
- * profile 为用户背景与训练目标（可选，来自训练库 settings 表）。
+ * profile 为用户背景与训练目标（可选，来自训练库 settings 表）；
+ * skills 为专业知识库段（可选，仅服务端注入）。
  */
-export function buildComparePrompt(summaryA, summaryB, profile) {
+export function buildComparePrompt(summaryA, summaryB, profile, skills) {
   return assemble(
     [
       `## 训练 A（${summaryA.activity?.date ?? "未知日期"}）\n\n${jsonBlock(compactSummaryForPrompt(summaryA))}`,
@@ -336,6 +348,7 @@ export function buildComparePrompt(summaryA, summaryB, profile) {
       "基于对比结果，给出下一阶段的训练重点建议。",
     ],
     profile,
+    skills,
   );
 }
 

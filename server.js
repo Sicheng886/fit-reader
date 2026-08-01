@@ -91,6 +91,7 @@ import {
   ROLE,
 } from "./src/prompts.js";
 import { callAI, runAgentLoop, isAiConfigured, aiConfigInfo } from "./src/ai.js";
+import { buildSkillsSection } from "./src/skills.js";
 import { TOOL_DEFS, executeTool } from "./src/tools.js";
 import { loadRecords, safeName } from "./src/records.js";
 import { AI_CONFIG, ATHLETE, FTP_ESTIMATION, POWER_ZONES, HR_ZONES } from "./src/settings.js";
@@ -174,11 +175,12 @@ function callAiMaybeAgentic(messages, { onChunk, onHeartbeat, source } = {}) {
 function buildPromptForMode(body) {
   const mode = body?.mode;
   const profile = getProfile(); // 用户背景与训练目标，四个场景统一纳入考量
+  const skills = buildSkillsSection(); // 专业知识库（skills/ 目录），四个场景统一注入
   if (mode === "review") {
     const name = safeName(body.file_name);
     const summary = name && getActivitySummary(name);
     if (!summary) throw new Error(`训练库中找不到: ${body.file_name ?? "(未提供)"}`);
-    return buildReviewPrompt(summary, profile);
+    return buildReviewPrompt(summary, profile, skills);
   }
   if (mode === "plan") {
     const daily = recentFormDaily(56);
@@ -190,6 +192,7 @@ function buildPromptForMode(body) {
         recentActivities: recentActivities(10),
       },
       profile,
+      skills,
     );
   }
   if (mode === "taper") {
@@ -211,6 +214,7 @@ function buildPromptForMode(body) {
         recentActivities: recentActivities(10),
       },
       profile,
+      skills,
     );
   }
   if (mode === "compare") {
@@ -219,7 +223,7 @@ function buildPromptForMode(body) {
     const sa = a && getActivitySummary(a);
     const sb = b && getActivitySummary(b);
     if (!sa || !sb) throw new Error("对比训练在训练库中找不到");
-    return buildComparePrompt(sa, sb, profile);
+    return buildComparePrompt(sa, sb, profile, skills);
   }
   throw new Error(`未知 mode: ${mode}`);
 }
@@ -227,8 +231,9 @@ function buildPromptForMode(body) {
 /**
  * 拼装对话系统段（每轮后台生成时按当前状态重新生成，历史消息只带正文）：
  * - follow_up：快答指令 + 关联报告正文 + 关联训练压缩数据 + 工具指引 + 用户记忆段；
- * - chat：教练角色 + 指标口径 + 用户背景 + 对话指令 + 工具指引 + 用户记忆段。
+ * - chat：教练角色 + 指标口径 + 专业知识库 + 用户背景 + 对话指令 + 工具指引 + 用户记忆段。
  * 记忆段只在 agentic 模式注入——其中的 save_memory 指引依赖工具调用能力。
+ * 专业知识库段（src/skills.js）只注入 chat 与四场景报告；follow_up 快答场景不注入。
  */
 function buildChatSystemSection(chat) {
   const agentic = AI_CONFIG.agentic !== false;
@@ -258,6 +263,7 @@ function buildChatSystemSection(chat) {
   const parts = [
     ROLE,
     buildMetricGlossary(),
+    buildSkillsSection(),
     buildProfileSection(getProfile()),
     buildChatInstruction("chat"),
   ].filter(Boolean);

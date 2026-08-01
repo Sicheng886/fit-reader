@@ -141,6 +141,10 @@ test("AI 接口（未配置密钥）退回提示词模式", async () => {
   assert.equal(data.configured, false);
   assert.match(data.prompt, /指标口径/);
   assert.match(data.prompt, /请回答/);
+  // 专业知识库（skills/ 目录内置技能）注入提示词
+  assert.match(data.prompt, /专业知识库/);
+  assert.match(data.prompt, /Coggan 功率训练体系/);
+  assert.match(data.prompt, /TrainingPeaks 负荷模型/);
 });
 
 test("AI 接口（周期规划）可生成提示词", async () => {
