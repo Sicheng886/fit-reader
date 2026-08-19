@@ -1,6 +1,8 @@
 # fit-reader
 
-一个解析码表/运动手表 `.fit` 文件的本地训练分析工具，输出逐秒时序 CSV 与汇总指标 JSON，并提供 Web 仪表盘与 AI 训练报告。**English documentation — [click here to read the English README](README.en.md).**
+一个解析码表/运动手表 `.fit` 文件的本地训练分析工具，输出逐秒时序 CSV 与汇总指标 JSON，并提供 Web 仪表盘与 AI 训练报告。
+
+**English documentation — [click here to read the English README](README.en.md).**
 
 ## 能做什么
 
