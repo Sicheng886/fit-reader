@@ -3,45 +3,45 @@
  */
 
 import {
-  $, app, esc, api, confirmModal, MEM_CATEGORY_LABEL, MEM_SOURCE_LABEL,
+  $, app, esc, api, confirmModal,
 } from "../common.js";
+import { t, memCategoryLabel, memSourceLabel } from "../i18n.js";
 
 export async function renderMemory() {
-  app.innerHTML = `<div class="view-title"><h1>AI 记忆</h1><span class="sub">AI 在报告与对话中记录的用户相关事实</span></div>
+  app.innerHTML = `<div class="view-title"><h1>${esc(t("memPage.title"))}</h1><span class="sub">${esc(t("memPage.sub"))}</span></div>
     <p class="muted" style="margin-bottom:12px;font-size:12px">
-      带日期的记忆会注入后续 AI 调用；同一主题相互矛盾时以日期最新者为准。已取代的记忆不再注入，但保留在库中作变化轨迹。
-      记错了就删，AI 会在后续交互中重记。
+      ${esc(t("memPage.desc"))}
     </p>
-    <div id="memList"><div class="empty loading">加载中…</div></div>`;
+    <div id="memList"><div class="empty loading">${esc(t("common.loading"))}</div></div>`;
   const memList = $("#memList");
   const render = async () => {
     const { memories } = await api("/api/ai/memories");
     if (!memories.length) {
-      memList.innerHTML = `<div class="empty">暂无记忆</div>`;
+      memList.innerHTML = `<div class="empty">${esc(t("memPage.empty"))}</div>`;
       return;
     }
     memList.innerHTML = `<div class="table-wrap"><table class="data-table">
-      <tr><th>日期</th><th>分类</th><th>来源</th><th>内容</th><th>状态</th><th></th></tr>
+      <tr><th>${esc(t("memPage.col.date"))}</th><th>${esc(t("memPage.col.cat"))}</th><th>${esc(t("memPage.col.source"))}</th><th>${esc(t("memPage.col.content"))}</th><th>${esc(t("memPage.col.status"))}</th><th></th></tr>
       ${memories
         .map(
           (m) => `<tr>
         <td class="mono" style="white-space:nowrap">${esc(String(m.created_at ?? "").slice(0, 10))}</td>
-        <td>${esc(MEM_CATEGORY_LABEL[m.category] ?? m.category ?? "通用")}</td>
-        <td>${esc(MEM_SOURCE_LABEL[m.source] ?? m.source ?? "-")}</td>
+        <td>${esc(memCategoryLabel(m.category))}</td>
+        <td>${esc(memSourceLabel(m.source))}</td>
         <td>${esc(m.content)}</td>
         <td>${
           m.active
-            ? `<span class="status-badge completed">有效</span>`
-            : `<span class="status-badge failed" title="已被 #${m.superseded_by} 取代">已取代</span>`
+            ? `<span class="status-badge completed">${esc(t("memPage.active"))}</span>`
+            : `<span class="status-badge failed" title="${esc(t("memPage.superseded_title", { n: m.superseded_by }))}">${esc(t("memPage.superseded"))}</span>`
         }</td>
-        <td><button class="btn icon mem-del" data-id="${m.id}" title="删除记忆">×</button></td>
+        <td><button class="btn icon mem-del" data-id="${m.id}" title="${esc(t("memPage.del_title"))}">×</button></td>
       </tr>`,
         )
         .join("")}
     </table></div>`;
     memList.querySelectorAll(".mem-del").forEach((btn) =>
       btn.addEventListener("click", () => {
-        confirmModal("删除记忆", "删除后 AI 将不再记得该事实。", async () => {
+        confirmModal(t("memPage.delete.title"), t("memPage.delete.text"), async () => {
           await api(`/api/ai/memory?id=${btn.dataset.id}`, { method: "DELETE" });
           render();
         });
@@ -49,6 +49,6 @@ export async function renderMemory() {
     );
   };
   render().catch(() => {
-    memList.innerHTML = `<div class="callout">记忆加载失败</div>`;
+    memList.innerHTML = `<div class="callout">${esc(t("memPage.failed"))}</div>`;
   });
 }

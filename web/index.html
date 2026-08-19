@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>fit-reader · 训练分析</title>
+    <title data-i18n="app.title">fit-reader · 训练分析</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="stylesheet" href="/style.css" />
   </head>
@@ -11,18 +11,18 @@
     <header class="topbar">
       <div class="brand"><img class="brand-mark" src="/logo.svg" alt="" />FIT<b>READER</b></div>
       <nav class="tabs" id="tabs">
-        <button class="tab" data-view="dashboard">概览</button>
-        <button class="tab" data-view="activities">训练</button>
-        <button class="tab" data-view="upload">上传</button>
-        <button class="tab" data-view="ai">AI 报告</button>
-        <button class="tab" data-view="chat">对话</button>
+        <button class="tab" data-view="dashboard" data-i18n="nav.dashboard">概览</button>
+        <button class="tab" data-view="activities" data-i18n="nav.activities">训练</button>
+        <button class="tab" data-view="upload" data-i18n="nav.upload">上传</button>
+        <button class="tab" data-view="ai" data-i18n="nav.ai">AI 报告</button>
+        <button class="tab" data-view="chat" data-i18n="nav.chat">对话</button>
         <div class="athlete-chip" id="athleteChip"></div>
         <div class="tab-menu-wrap" id="settingsMenu">
-          <button class="tab menu-trigger" aria-haspopup="true" aria-expanded="false" title="更多">⋮</button>
+          <button class="tab menu-trigger" aria-haspopup="true" aria-expanded="false" title="更多" data-i18n-title="nav.more">⋮</button>
           <div class="tab-menu" hidden>
-            <a class="tab-menu-item" href="#/memory" data-view="memory">记忆</a>
-            <a class="tab-menu-item" href="#/settings" data-view="settings">设置</a>
-            <a class="tab-menu-item" href="#/about" data-view="about">关于</a>
+            <a class="tab-menu-item" href="#/memory" data-view="memory" data-i18n="nav.memory">记忆</a>
+            <a class="tab-menu-item" href="#/settings" data-view="settings" data-i18n="nav.settings">设置</a>
+            <a class="tab-menu-item" href="#/about" data-view="about" data-i18n="nav.about">关于</a>
           </div>
         </div>
       </nav>

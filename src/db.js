@@ -26,6 +26,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { ATHLETE, AI_CONFIG, FTP_ESTIMATION } from "./settings.js";
+import { normalizeLang, t, formNote } from "./i18n.js";
 
 const DB_PATH = process.env.FIT_DB_PATH || path.resolve("db", "fitness.db");
 
@@ -191,20 +192,20 @@ const ATHLETE_LIMITS = {
 
 /**
  * 更新骑手参数（允许只给部分字段）：校验 → 合并当前值写库 → 原地生效。
- * 非法值抛 Error（中文 message，Web API 直接透传给前端）。
+ * 非法值抛 Error（message 按 lang 双语，Web API 直接透传给前端）。
  */
-export function setAthlete(partial) {
+export function setAthlete(partial, lang = "zh") {
   const updates = {};
   for (const key of Object.keys(ATHLETE_LIMITS)) {
     if (partial?.[key] == null) continue;
     const v = Number(partial[key]);
     const [lo, hi] = ATHLETE_LIMITS[key];
     if (!Number.isFinite(v) || v < lo || v > hi)
-      throw new Error(`${key} 需在 ${lo}–${hi} 之间`);
+      throw new Error(t(lang, "athlete.range", { key, lo, hi }));
     updates[key] = v;
   }
   if (!Object.keys(updates).length)
-    throw new Error("至少需要提供一个字段：ftp_watts / max_hr / weight_kg");
+    throw new Error(t(lang, "athlete.none"));
   const merged = { ...ATHLETE, ...updates };
   const db = openDb();
   db.prepare(
@@ -250,24 +251,24 @@ export function getAiConfig() {
 
 /**
  * 更新 AI 服务配置（允许只给部分字段）：校验 → 合并当前值写库 → 原地生效。
- * 非法值抛 Error（中文 message，Web API 直接透传给前端）。
+ * 非法值抛 Error（message 按 lang 双语，Web API 直接透传给前端）。
  * api_key 传空字符串表示清除密钥（退化为复制提示词模式）。
  */
-export function setAiConfig(partial) {
+export function setAiConfig(partial, lang = "zh") {
   const updates = {};
   if (partial?.api_key != null) {
     if (typeof partial.api_key !== "string")
-      throw new Error("api_key 需为字符串");
+      throw new Error(t(lang, "ai.key_type"));
     updates.api_key = partial.api_key.trim() || null;
   }
   if (partial?.base_url != null) {
     const u = String(partial.base_url).trim().replace(/\/+$/, "");
-    if (!/^https?:\/\/.+/.test(u)) throw new Error("base_url 需为 http(s) 地址");
+    if (!/^https?:\/\/.+/.test(u)) throw new Error(t(lang, "ai.base_url"));
     updates.base_url = u;
   }
   if (partial?.model != null) {
     const m = String(partial.model).trim();
-    if (!m) throw new Error("model 不能为空");
+    if (!m) throw new Error(t(lang, "ai.model"));
     updates.model = m;
   }
   if (partial?.temperature !== undefined) {
@@ -276,7 +277,7 @@ export function setAiConfig(partial) {
     } else {
       const t = Number(partial.temperature);
       if (!Number.isFinite(t) || t < 0 || t > 2)
-        throw new Error("temperature 需在 0–2 之间，或留空表示不传");
+        throw new Error(t(lang, "ai.temperature"));
       updates.temperature = t;
     }
   }
@@ -284,13 +285,13 @@ export function setAiConfig(partial) {
     if (partial?.[key] == null) continue;
     const v = Number(partial[key]);
     if (!Number.isFinite(v) || v < 1000)
-      throw new Error(`${key} 需为 ≥1000 的毫秒数`);
+      throw new Error(t(lang, "ai.ms", { key }));
     updates[key] = Math.round(v);
   }
   if (partial?.stream != null) updates.stream = Boolean(partial.stream);
   if (partial?.agentic != null) updates.agentic = Boolean(partial.agentic);
   if (!Object.keys(updates).length)
-    throw new Error("至少需要提供一个字段：api_key / base_url / model / temperature / timeout_ms / stream / stall_ms / agentic");
+    throw new Error(t(lang, "ai.none"));
   const merged = { ...AI_CONFIG, ...updates };
   const db = openDb();
   db.prepare(
@@ -357,15 +358,16 @@ export function categoryLabel(category) {
 
 /**
  * 更新训练分类（训练/比赛/恢复/休闲）。
- * 非法值或训练不存在时抛 Error（Web API 直接透传给前端）。
+ * 非法值或训练不存在时抛 Error（message 按 lang 双语，Web API 直接透传给前端）。
  */
-export function setActivityCategory(fileName, category) {
-  if (!isValidCategory(category)) throw new Error("分类需为 training/race/recovery/leisure");
+export function setActivityCategory(fileName, category, lang = "zh") {
+  if (!isValidCategory(category))
+    throw new Error(t(lang, "category.invalid"));
   const db = openDb();
   const info = db
     .prepare(`UPDATE activities SET category = ? WHERE file_name = ?`)
     .run(category, fileName);
-  if (info.changes === 0) throw new Error("训练不存在");
+  if (info.changes === 0) throw new Error(t(lang, "activity.not_found"));
   return { ok: true };
 }
 
@@ -383,14 +385,15 @@ const NOTE_MAX_LEN = 2000;
  * 更新训练备注（用户自由注释，AI 复盘时纳入考量）。
  * 传空字符串/纯空白表示清除备注；训练不存在时抛 Error（Web API 直接透传给前端）。
  */
-export function setActivityNote(fileName, note) {
+export function setActivityNote(fileName, note, lang = "zh") {
   const text = String(note ?? "").trim();
-  if (text.length > NOTE_MAX_LEN) throw new Error(`备注过长（上限 ${NOTE_MAX_LEN} 字）`);
+  if (text.length > NOTE_MAX_LEN)
+    throw new Error(t(lang, "note.too_long", { n: NOTE_MAX_LEN }));
   const db = openDb();
   const info = db
     .prepare(`UPDATE activities SET note = ? WHERE file_name = ?`)
     .run(text || null, fileName);
-  if (info.changes === 0) throw new Error("训练不存在");
+  if (info.changes === 0) throw new Error(t(lang, "activity.not_found"));
   return { ok: true, note: text || null };
 }
 
@@ -422,15 +425,16 @@ export function getProfile() {
  * 更新用户背景与训练目标（允许只给部分字段）：校验 → 合并写库。
  * 两字段都为空时删除 profile 行（视为未配置）。非法值抛 Error（Web API 直接透传）。
  */
-export function setProfile(partial) {
+export function setProfile(partial, lang = "zh") {
   const current = getProfile();
   const merged = { identity: current.identity, goal: current.goal };
   for (const key of Object.keys(PROFILE_LIMITS)) {
     if (partial?.[key] == null) continue;
-    if (typeof partial[key] !== "string") throw new Error(`${key} 需为字符串`);
+    if (typeof partial[key] !== "string")
+      throw new Error(t(lang, "profile.type", { key }));
     const v = partial[key].trim();
     if (v.length > PROFILE_LIMITS[key])
-      throw new Error(`${key} 过长（上限 ${PROFILE_LIMITS[key]} 字）`);
+      throw new Error(t(lang, "profile.too_long", { key, n: PROFILE_LIMITS[key] }));
     merged[key] = v;
   }
   const db = openDb();
@@ -697,18 +701,19 @@ const MEMORY_KEEP = 100;
  * 记忆存在，并把其 superseded_by 置为新 id（被取代的记忆不再注入但保留可追溯）。
  * 非法输入抛 Error（中文 message，工具层转为 {error} JSON 反馈给 AI）。
  */
-export function saveMemory({ content, category, source, supersedes_id } = {}) {
+export function saveMemory({ content, category, source, supersedes_id } = {}, lang = "zh") {
   const text = String(content ?? "").trim();
-  if (!text) throw new Error("记忆内容不能为空");
+  if (!text) throw new Error(t(lang, "memory.empty"));
   if (text.length > MEMORY_MAX_LEN)
-    throw new Error(`记忆内容过长（上限 ${MEMORY_MAX_LEN} 字）`);
+    throw new Error(t(lang, "memory.too_long", { n: MEMORY_MAX_LEN }));
   const cat = MEMORY_CATEGORIES.has(category) ? category : "general";
   const db = openDb();
   let supersedeId = null;
   if (supersedes_id != null) {
     supersedeId = Number(supersedes_id);
     const target = db.prepare(`SELECT id FROM ai_memories WHERE id = ?`).get(supersedeId);
-    if (!target) throw new Error(`要取代的记忆不存在: ${supersedes_id}`);
+    if (!target)
+      throw new Error(t(lang, "memory.supersede_not_found", { id: supersedes_id }));
   }
   const info = db
     .prepare(`INSERT INTO ai_memories (content, category, source) VALUES (?, ?, ?)`)
@@ -835,8 +840,10 @@ function dailyTssSeries(endDate) {
  *   ATL_d = ATL_{d-1} + (TSS_d − ATL_{d-1}) / 7    急性负荷（疲劳）
  *   TSB   = CTL − ATL                              状态（正值=新鲜）
  * 初始值 0，计算到 date 当天（含）。
+ * 返回 form_state（枚举：fresh/good/balanced/fatigued/overtrained，语言中立，
+ * 供界面/AI 按语言渲染）与 form_note（按 lang 生成的简评文本）。
  */
-export function computeForm(date) {
+export function computeForm(date, lang = "zh") {
   const series = dailyTssSeries(date);
   if (!series.length) return null;
   let ctl = 0,
@@ -847,11 +854,13 @@ export function computeForm(date) {
   }
   const tsb = ctl - atl;
   const r1 = (x) => Math.round(x * 10) / 10;
+  const state = tsb >= 15 ? "fresh" : tsb >= 5 ? "good" : tsb >= -10 ? "balanced" : tsb >= -20 ? "fatigued" : "overtrained";
   return {
     ctl: r1(ctl),
     atl: r1(atl),
     tsb: r1(tsb),
-    form_note: formNote(tsb),
+    form_state: state,
+    form_note: formNote(tsb, lang),
   };
 }
 
@@ -999,13 +1008,25 @@ export function cyclingSummariesSince(days = 42) {
   return out;
 }
 
-/** TSB 中文简评（供 athlete_context / AI 参考） */
-function formNote(tsb) {
-  if (tsb >= 15) return "状态很新鲜，适合比赛或高强度测试";
-  if (tsb >= 5) return "状态良好，恢复充分";
-  if (tsb >= -10) return "负荷与恢复平衡，可持续训练";
-  if (tsb >= -20) return "疲劳积累期，注意睡眠与恢复";
-  return "过度疲劳风险，建议安排减量周";
+// ---------------- 界面语言（存 settings 表 lang 键，Web 前端检测/设置页切换） ----------------
+
+/** 当前界面语言（zh/en，settings 表 lang 键；无配置回落 zh） */
+export function getLang() {
+  const db = openDb();
+  const row = db.prepare(`SELECT value FROM settings WHERE key = 'lang'`).get();
+  return row ? normalizeLang(row.value) : "zh";
+}
+
+/** 保存界面语言（仅认 zh/en，非法值抛 Error） */
+export function setLang(lang) {
+  const l = String(lang ?? "");
+  if (l !== "zh" && l !== "en") throw new Error(t("zh", "srv.lang_invalid"));
+  const db = openDb();
+  db.prepare(
+    `INSERT INTO settings (key, value) VALUES ('lang', ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+  ).run(l);
+  return l;
 }
 
 /**

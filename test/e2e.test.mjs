@@ -17,6 +17,7 @@ process.env.FIT_DB_PATH = path.join(tmp, "test-fitness.db");
 
 const { analyzeFile } = await import("../index.js");
 const { ATHLETE } = await import("../src/settings.js");
+const { formatAnomaly } = await import("../src/i18n.js");
 const gen = await import("./make_test_fit.mjs");
 
 const inDir = path.join(tmp, "in");
@@ -60,8 +61,14 @@ test("骑行：30 分钟恒定功率 + 60 秒功率缺失", async () => {
   assert.equal(summary.power.tss, expectedTSS);
   assert.equal(summary.power.peak_curve["5min"], 200);
 
-  // 功率缺失被标注；覆盖率 = 1740/1800 ≈ 97%
-  assert.ok(summary.anomalies.some((a) => a.includes("功率缺失 60s")));
+  // 功率缺失被标注（结构化：type 语言中立，中文渲染口径不变）；覆盖率 = 1740/1800 ≈ 97%
+  assert.ok(
+    summary.anomalies.some((a) => a.type === "power_gap" && a.duration_sec === 60),
+  );
+  assert.ok(
+    summary.anomalies.some((a) => formatAnomaly(a, "zh").includes("功率缺失 60s")),
+  );
+  assert.ok(summary.anomalies.some((a) => formatAnomaly(a, "en").includes("Power missing 60s")));
   assert.equal(summary.data_quality.power_coverage_pct, 97);
   assert.equal(summary.data_quality.record_count, 1800);
   assert.equal(summary.data_quality.missing_seconds, undefined);
@@ -106,8 +113,13 @@ test("损坏兜底：整段记录缺失 + 无时间戳坏记录被计数标注",
   assert.equal(summary.data_quality.dropped_records_no_timestamp, 2);
   // 缺失秒数 = 45 + 20 + 2（无时间戳的 2 秒同样没有数据）
   assert.equal(summary.data_quality.missing_seconds, 67);
-  assert.ok(summary.anomalies.some((a) => a.includes("记录缺失 45s")));
-  assert.ok(summary.anomalies.some((a) => a.includes("记录缺失 20s")));
+  assert.ok(
+    summary.anomalies.some((a) => a.type === "record_gap" && a.duration_sec === 45),
+  );
+  assert.ok(
+    summary.anomalies.some((a) => a.type === "record_gap" && a.duration_sec === 20),
+  );
+  assert.ok(summary.anomalies.some((a) => formatAnomaly(a, "zh").includes("记录缺失 45s")));
 });
 
 test("跑步：配速/步频指标，无功率段，心率漂移走速度口径", async () => {

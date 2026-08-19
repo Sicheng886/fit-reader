@@ -2,23 +2,25 @@
  * views/activities.js — 训练列表 + 训练详情
  * 详情页：指标网格 / 分类标记 / 训练备注 / 时序曲线（系列开关）/ 分区分布 /
  * 峰功率曲线 / 赛段 / 爬坡 / 踏频-功率 / 数据质量 / AI 复盘（含追问）。
+ * 文案走 i18n.js（t()）；anomalies 与 form_note 由服务端按请求语言渲染。
  */
 
 import {
-  $, app, esc, api, num, fmtDur, formNote, state, loadOverview,
-  sportBadge, CATEGORY_LABEL, ZONE_COLORS, actRowHtml,
+  $, app, esc, api, num, fmtDur, state, loadOverview,
+  sportBadge, ZONE_COLORS, actRowHtml,
 } from "../common.js";
+import { t, CATEGORY_OPTIONS, formNote, cadenceStyleHint } from "../i18n.js";
 import { drawLineChart, zoneBarsHtml, peakCurveHtml } from "../charts.js";
 import { runAi, attachFollowUp } from "../ai.js";
 
 // ---------------- 训练列表 ----------------
 
 export async function renderActivities() {
-  app.innerHTML = `<div class="empty loading">加载中…</div>`;
+  app.innerHTML = `<div class="empty loading">${esc(t("common.loading"))}</div>`;
   const ov = await loadOverview();
   app.innerHTML = `
-    <div class="view-title"><h1>训练记录</h1><span class="sub">${(ov.activities || []).length} 次训练</span></div>
-    <div class="act-list">${(ov.activities || []).map(actRowHtml).join("") || `<div class="empty">训练库为空</div>`}</div>`;
+    <div class="view-title"><h1>${esc(t("acts.title"))}</h1><span class="sub">${esc(t("acts.count", { n: (ov.activities || []).length }))}</span></div>
+    <div class="act-list">${(ov.activities || []).map(actRowHtml).join("") || `<div class="empty">${esc(t("acts.empty"))}</div>`}</div>`;
 }
 
 // ---------------- 训练详情 ----------------
@@ -32,7 +34,7 @@ function metricHtml(label, value, unit, sub) {
 }
 
 export async function renderActivityDetail(name) {
-  app.innerHTML = `<div class="empty loading">加载中…</div>`;
+  app.innerHTML = `<div class="empty loading">${esc(t("common.loading"))}</div>`;
   const [{ summary, zone_ranges }, records] = await Promise.all([
     api(`/api/activity?name=${encodeURIComponent(name)}`),
     api(`/api/records?name=${encodeURIComponent(name)}`).catch(() => null),
@@ -45,94 +47,94 @@ export async function renderActivityDetail(name) {
 
   // ---- 指标网格（按运动类型组织） ----
   const metrics = [];
-  metrics.push(metricHtml("时长", fmtDur(a.duration_sec)));
-  metrics.push(metricHtml("距离", num(a.distance_km, 2), "km"));
-  if (a.avg_speed_kmh != null) metrics.push(metricHtml("平均速度", num(a.avg_speed_kmh, 2), "km/h"));
-  if (a.elevation_gain_m) metrics.push(metricHtml("爬升", a.elevation_gain_m, "m"));
-  if (a.total_calories != null) metrics.push(metricHtml("卡路里", a.total_calories, "kcal"));
-  if (p.normalized_power != null) metrics.push(metricHtml("NP", p.normalized_power, "W", `IF ${num(p.intensity_factor, 2)}`));
-  if (p.avg != null) metrics.push(metricHtml("平均功率", num(p.avg, 0), "W", p.w_per_kg_avg ? `${num(p.w_per_kg_avg, 2)} W/kg` : ""));
-  if (p.max != null) metrics.push(metricHtml("最大功率", p.max, "W"));
-  if (p.tss != null) metrics.push(metricHtml("TSS", p.tss, "", `VI ${num(p.variability_index, 2)}`));
-  if (hr.avg != null) metrics.push(metricHtml("平均心率", num(hr.avg, 0), "bpm", hr.max ? `最大 ${hr.max}` : ""));
+  metrics.push(metricHtml(t("m.duration"), fmtDur(a.duration_sec)));
+  metrics.push(metricHtml(t("m.distance"), num(a.distance_km, 2), "km"));
+  if (a.avg_speed_kmh != null) metrics.push(metricHtml(t("m.avg_speed"), num(a.avg_speed_kmh, 2), "km/h"));
+  if (a.elevation_gain_m) metrics.push(metricHtml(t("m.gain"), a.elevation_gain_m, "m"));
+  if (a.total_calories != null) metrics.push(metricHtml(t("m.calories"), a.total_calories, "kcal"));
+  if (p.normalized_power != null) metrics.push(metricHtml("NP", p.normalized_power, "W", t("m.np_sub", { if: num(p.intensity_factor, 2) })));
+  if (p.avg != null) metrics.push(metricHtml(t("m.avg_power"), num(p.avg, 0), "W", p.w_per_kg_avg ? `${num(p.w_per_kg_avg, 2)} W/kg` : ""));
+  if (p.max != null) metrics.push(metricHtml(t("m.max_power"), p.max, "W"));
+  if (p.tss != null) metrics.push(metricHtml("TSS", p.tss, "", t("m.tss_sub", { vi: num(p.variability_index, 2) })));
+  if (hr.avg != null) metrics.push(metricHtml(t("m.avg_hr"), num(hr.avg, 0), "bpm", hr.max ? t("m.max_hr_sub", { max: hr.max }) : ""));
   if (hr.hr_drift_pct != null)
-    metrics.push(metricHtml("心率漂移", num(hr.hr_drift_pct, 1), "%", Math.abs(hr.hr_drift_pct) < 5 ? "有氧基础扎实" : "漂移偏大"));
+    metrics.push(metricHtml(t("m.hr_drift"), num(hr.hr_drift_pct, 1), "%", Math.abs(hr.hr_drift_pct) < 5 ? t("m.drift_good") : t("m.drift_high")));
   if (summary.cadence?.avg != null)
-    metrics.push(metricHtml(a.sport === "running" ? "平均步频" : "平均踏频", num(summary.cadence.avg, 0), a.sport === "running" ? "spm" : "rpm"));
+    metrics.push(metricHtml(a.sport === "running" ? t("m.stride") : t("m.cadence"), num(summary.cadence.avg, 0), a.sport === "running" ? "spm" : "rpm"));
   if (summary.temperature)
-    metrics.push(metricHtml("平均温度", num(summary.temperature.avg, 1), "°C", summary.temperature.max != null ? `最高 ${summary.temperature.max}°C` : ""));
+    metrics.push(metricHtml(t("m.temp"), num(summary.temperature.avg, 1), "°C", summary.temperature.max != null ? t("m.temp_max", { t: summary.temperature.max }) : ""));
   if (summary.pace) {
-    metrics.push(metricHtml("平均配速", fmtPace(summary.pace.avg_pace_min_per_km), "/km"));
+    metrics.push(metricHtml(t("m.pace"), fmtPace(summary.pace.avg_pace_min_per_km), "/km"));
     if (summary.pace.best_1min_pace_min_per_km)
-      metrics.push(metricHtml("最快 1min 配速", fmtPace(summary.pace.best_1min_pace_min_per_km), "/km"));
+      metrics.push(metricHtml(t("m.pace_best"), fmtPace(summary.pace.best_1min_pace_min_per_km), "/km"));
   }
   if (summary.swim) {
     const sw = summary.swim;
-    metrics.push(metricHtml("趟数", sw.lengths_count));
-    if (sw.avg_swolf) metrics.push(metricHtml("平均 SWOLF", sw.avg_swolf));
-    if (sw.avg_length_time_sec) metrics.push(metricHtml("平均每趟", num(sw.avg_length_time_sec, 1), "s"));
+    metrics.push(metricHtml(t("m.swim_lengths"), sw.lengths_count));
+    if (sw.avg_swolf) metrics.push(metricHtml(t("m.swolf"), sw.avg_swolf));
+    if (sw.avg_length_time_sec) metrics.push(metricHtml(t("m.swim_avg"), num(sw.avg_length_time_sec, 1), "s"));
   }
   if (ac.ctl != null) {
-    metrics.push(metricHtml("当日 CTL", ac.ctl, "", "训练当日体能"));
-    metrics.push(metricHtml("当日 ATL", ac.atl, "", "训练当日疲劳"));
-    metrics.push(metricHtml("当日 TSB", (ac.tsb > 0 ? "+" : "") + ac.tsb, "", ac.form_note || formNote(ac.tsb)));
+    metrics.push(metricHtml(t("m.ctl"), ac.ctl, "", t("m.ctl_sub")));
+    metrics.push(metricHtml(t("m.atl"), ac.atl, "", t("m.atl_sub")));
+    metrics.push(metricHtml(t("m.tsb"), (ac.tsb > 0 ? "+" : "") + ac.tsb, "", ac.form_note || formNote(ac.tsb)));
   }
 
   // ---- FTP 估算提示 ----
   let ftpCallout = "";
   const est = p.ftp_estimate;
   if (est && est.suggestion === "consider_update")
-    ftpCallout = `<div class="callout">FTP 估算 ${est.estimated_ftp_w}W（20min 峰功率 × 0.95），高于当前配置 ${est.current_ftp_w}W — 建议到「设置」页更新 FTP</div>`;
+    ftpCallout = `<div class="callout">${esc(t("ftp.callout_hi", { est: est.estimated_ftp_w, cur: est.current_ftp_w }))}</div>`;
   else if (est && est.suggestion === "consider_recheck")
-    ftpCallout = `<div class="callout info">FTP 估算 ${est.estimated_ftp_w}W，低于当前配置 ${est.current_ftp_w}W — 可能状态欠佳或本次未尽全力，建议实测确认后再调整</div>`;
+    ftpCallout = `<div class="callout info">${esc(t("ftp.callout_lo", { est: est.estimated_ftp_w, cur: est.current_ftp_w }))}</div>`;
 
   // ---- 时序图 ----
   const seriesDefs = [
-    { key: "power", name: "功率", color: "#d7ff3f", unit: "W", area: true },
-    { key: "heart_rate", name: "心率", color: "#ff5d73", unit: "bpm" },
-    { key: "cadence", name: a.sport === "running" ? "步频" : "踏频", color: "#3fd6f5", unit: a.sport === "running" ? "spm" : "rpm" },
-    { key: "altitude", name: "海拔", color: "#8d9aa8", unit: "m" },
-    { key: "speed", name: "速度", color: "#5aa2ff", unit: "km/h" },
-    { key: "temperature", name: "温度", color: "#ffa94d", unit: "°C" },
+    { key: "power", name: t("series.power"), color: "#d7ff3f", unit: "W", area: true },
+    { key: "heart_rate", name: t("series.hr"), color: "#ff5d73", unit: "bpm" },
+    { key: "cadence", name: a.sport === "running" ? t("series.stride") : t("series.cadence"), color: "#3fd6f5", unit: a.sport === "running" ? "spm" : "rpm" },
+    { key: "altitude", name: t("series.altitude"), color: "#8d9aa8", unit: "m" },
+    { key: "speed", name: t("series.speed"), color: "#5aa2ff", unit: "km/h" },
+    { key: "temperature", name: t("series.temp"), color: "#ffa94d", unit: "°C" },
   ];
 
   app.innerHTML = `
     <div class="detail-head">
-      <a class="back-link" href="#/activities">← 训练列表</a>
+      <a class="back-link" href="#/activities">${esc(t("detail.back"))}</a>
       <h1>${sportBadge(a.sport)}${esc(a.date)}</h1>
       <span class="muted mono" style="font-size:12px">${esc(name)}</span>
       <div class="category-bar">
-        <label for="actCategory">分类</label>
+        <label for="actCategory">${esc(t("cat.label"))}</label>
         <select id="actCategory">
-          ${Object.entries(CATEGORY_LABEL)
-            .map(([k, v]) => `<option value="${k}" ${summary.activity?.category === k ? "selected" : ""}>${esc(v)}</option>`)
+          ${CATEGORY_OPTIONS()
+            .map((o) => `<option value="${o.key}" ${summary.activity?.category === o.key ? "selected" : ""}>${esc(o.label)}</option>`)
             .join("")}
         </select>
-        <span id="catSaved" class="muted" style="display:none">已保存</span>
+        <span id="catSaved" class="muted" style="display:none">${esc(t("cat.saved"))}</span>
       </div>
       <span class="spacer"></span>
-      <button class="btn" id="btnAiReview"><span>AI 复盘</span></button>
+      <button class="btn" id="btnAiReview"><span>${esc(t("btn.ai_review"))}</span></button>
     </div>
     ${ftpCallout}
     <div class="metric-grid">${metrics.join("")}</div>
     <div class="panel">
-      <div class="panel-title">训练备注</div>
+      <div class="panel-title">${esc(t("note.title"))}</div>
       <div class="note-form">
-        <textarea id="actNote" rows="3" maxlength="2000" placeholder="自由记录本次训练的体感、路况、天气、状态等（AI 复盘时会纳入考量）…">${esc(a.note ?? "")}</textarea>
+        <textarea id="actNote" rows="3" maxlength="2000" placeholder="${esc(t("note.placeholder"))}">${esc(a.note ?? "")}</textarea>
         <div class="note-actions">
-          <button class="btn sm" id="btnSaveNote"><span>保存备注</span></button>
-          <span id="noteSaved" class="muted" style="display:none">已保存 ✓</span>
+          <button class="btn sm" id="btnSaveNote"><span>${esc(t("note.save"))}</span></button>
+          <span id="noteSaved" class="muted" style="display:none">${esc(t("note.saved"))}</span>
         </div>
       </div>
     </div>
     <div class="panel">
-      <div class="panel-title">时序曲线（各系列独立纵轴缩放）</div>
+      <div class="panel-title">${esc(t("detail.chart_title"))}</div>
       <div class="chart-legend" id="tsLegend"></div>
       <div class="chart-wrap" id="tsChart"></div>
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px" class="zone-panels">
-      <div class="panel"><div class="panel-title">功率分区（Coggan 7 区）</div>${zoneBarsHtml(p.zone_distribution_pct, ZONE_COLORS, zone_ranges?.power)}</div>
-      <div class="panel"><div class="panel-title">心率分区（5 区）</div>${zoneBarsHtml(hr.zone_distribution_pct, ZONE_COLORS, zone_ranges?.hr)}</div>
+      <div class="panel"><div class="panel-title">${esc(t("zone.power"))}</div>${zoneBarsHtml(p.zone_distribution_pct, ZONE_COLORS, zone_ranges?.power)}</div>
+      <div class="panel"><div class="panel-title">${esc(t("zone.hr"))}</div>${zoneBarsHtml(hr.zone_distribution_pct, ZONE_COLORS, zone_ranges?.hr)}</div>
     </div>
     ${peakCurveHtml(p.peak_curve, ftp)}
     ${segmentsHtml(summary)}
@@ -140,7 +142,7 @@ export async function renderActivityDetail(name) {
     ${cadencePowerHtml(summary)}
     ${anomaliesHtml(summary)}
     <div class="panel" id="aiPanel" style="display:none">
-      <div class="panel-title">AI 复盘报告</div>
+      <div class="panel-title">${esc(t("ai.panel"))}</div>
       <div id="aiBody"></div>
     </div>`;
 
@@ -149,7 +151,7 @@ export async function renderActivityDetail(name) {
   const chartEl = $("#tsChart");
   const redraw = () => {
     if (!records?.points?.length) {
-      chartEl.innerHTML = `<div class="empty">没有时序数据（records CSV 不在输出目录中）</div>`;
+      chartEl.innerHTML = `<div class="empty">${esc(t("detail.no_records"))}</div>`;
       return;
     }
     const series = seriesDefs
@@ -166,8 +168,8 @@ export async function renderActivityDetail(name) {
         const vals = s.points.filter((v) => v != null);
         const avg = vals.length ? Math.round(vals.reduce((x, y) => x + y, 0) / vals.length) : null;
         return `<button class="legend-chip ${s.visible === false ? "off" : ""}" data-key="${s.key}">
-          <span class="dot" style="background:${s.color}"></span>${s.name}
-          <span class="avg">均 ${avg ?? "-"}${s.unit}</span></button>`;
+          <span class="dot" style="background:${s.color}"></span>${esc(s.name)}
+          <span class="avg">${esc(t("legend.avg", { avg: avg ?? "-", unit: s.unit }))}</span></button>`;
       })
       .join("");
     legend.querySelectorAll(".legend-chip").forEach((chip) =>
@@ -193,7 +195,7 @@ export async function renderActivityDetail(name) {
       });
       noteSaved.style.display = "";
     } catch (e) {
-      alert(`备注保存失败：${e.message}`);
+      alert(t("note.failed", { msg: e.message }));
     }
   });
 
@@ -212,7 +214,7 @@ export async function renderActivityDetail(name) {
         catSaved.style.display = "";
         state.overview = null; // 列表页分类缓存失效
       } catch (e) {
-        alert(`分类保存失败：${e.message}`);
+        alert(t("cat.failed", { msg: e.message }));
       }
     });
   }
@@ -227,16 +229,16 @@ export async function renderActivityDetail(name) {
         const rep = reports[0];
         panel.style.display = "";
         if (rep.status === "pending") {
-          panel.querySelector(".panel-title").innerHTML = "AI 复盘报告（生成中…）";
-          body.innerHTML = `<div class="callout info">AI 复盘报告正在后台生成中，请稍后再刷新查看。</div>`;
+          panel.querySelector(".panel-title").innerHTML = t("ai.panel.pending");
+          body.innerHTML = `<div class="callout info">${esc(t("ai.panel.pending_hint"))}</div>`;
         } else if (rep.status === "failed") {
-          panel.querySelector(".panel-title").innerHTML = "AI 复盘报告（生成失败）";
-          body.innerHTML = `<div class="callout">生成失败：${esc(rep.error || "未知错误")}</div>`;
+          panel.querySelector(".panel-title").innerHTML = t("ai.panel.failed");
+          body.innerHTML = `<div class="callout">${esc(t("ai.failed", { err: rep.error || t("ai.err.unknown") }))}</div>`;
         } else {
           const cached = await api(`/api/ai/report?id=${rep.id}`);
           panel.querySelector(".panel-title").innerHTML =
-            `AI 复盘报告（已缓存 #${rep.id}）` +
-            `<button class="btn ghost" id="btnRegenReview" style="margin-left:auto"><span>重新生成</span></button>`;
+            t("ai.panel.cached", { id: rep.id }) +
+            `<button class="btn ghost" id="btnRegenReview" style="margin-left:auto"><span>${esc(t("ai.regen"))}</span></button>`;
           body.innerHTML = `<div class="ai-result">${cached.html}</div>`;
           state.aiThread = {
             file_name: name,
@@ -275,10 +277,11 @@ function fmtPace(minPerKm) {
 function segmentsHtml(summary) {
   const segs = summary.segments;
   if (!segs?.length) return "";
-  const cols = ["时长", "均功率", "最大功率", "均心率", "均踏频", "%FTP", "距离", "配速"];
-  return `<div class="panel"><div class="panel-title">赛段 / 间歇（${segs.length}）</div>
+  const cols = ["duration", "avg_power", "max_power", "avg_hr", "avg_cadence", "pct_ftp", "distance", "pace"]
+    .map((c) => esc(t(`seg.col.${c}`)));
+  return `<div class="panel"><div class="panel-title">${esc(t("seg.title", { n: segs.length }))}</div>
     <div style="overflow-x:auto"><table class="data-table">
-    <tr><th>名称</th>${cols.map((c) => `<th>${c}</th>`).join("")}</tr>
+    <tr><th>${esc(t("seg.name"))}</th>${cols.map((c) => `<th>${c}</th>`).join("")}</tr>
     ${segs.map((s) => `<tr><td>${esc(s.name)}</td>
       <td>${fmtDur(s.duration_sec)}</td>
       <td>${s.avg_power ?? "-"}</td><td>${s.max_power ?? "-"}</td>
@@ -288,15 +291,20 @@ function segmentsHtml(summary) {
       <td>${s.avg_pace_min_per_km ? fmtPace(s.avg_pace_min_per_km) : "-"}</td></tr>`).join("")}
     </table></div>
     ${summary.interval_set ? `<p class="muted" style="margin-top:10px;font-size:12px">
-      间歇组：${summary.interval_set.count} 组 × 均 ${fmtDur(summary.interval_set.avg_duration_sec)} @ ${summary.interval_set.avg_power}W（${summary.interval_set.avg_pct_ftp}% FTP）</p>` : ""}
+      ${esc(t("seg.set", {
+        n: summary.interval_set.count,
+        dur: fmtDur(summary.interval_set.avg_duration_sec),
+        w: summary.interval_set.avg_power,
+        pct: summary.interval_set.avg_pct_ftp,
+      }))}</p>` : ""}
   </div>`;
 }
 
 function climbsHtml(summary) {
   if (!summary.climbs?.length) return "";
-  return `<div class="panel"><div class="panel-title">爬坡段（${summary.climbs.length}）</div>
+  return `<div class="panel"><div class="panel-title">${esc(t("climb.title", { n: summary.climbs.length }))}</div>
     <div class="table-wrap"><table class="data-table">
-    <tr><th>名称</th><th>时长</th><th>长度 m</th><th>爬升 m</th><th>均坡度 %</th><th>均功率</th><th>均心率</th></tr>
+    <tr><th>${esc(t("climb.col.name"))}</th><th>${esc(t("climb.col.duration"))}</th><th>${esc(t("climb.col.distance"))}</th><th>${esc(t("climb.col.gain"))}</th><th>${esc(t("climb.col.grade"))}</th><th>${esc(t("climb.col.avg_power"))}</th><th>${esc(t("climb.col.avg_hr"))}</th></tr>
     ${summary.climbs.map((c) => `<tr><td>${esc(c.name)}</td><td>${fmtDur(c.duration_sec)}</td>
       <td>${c.distance_m}</td><td>${c.elevation_gain_m}</td><td>${c.avg_grade_pct}</td>
       <td>${c.avg_power ?? "-"}</td><td>${c.avg_hr ?? "-"}</td></tr>`).join("")}
@@ -306,15 +314,16 @@ function climbsHtml(summary) {
 function cadencePowerHtml(summary) {
   const cp = summary.cadence_power;
   if (!cp) return "";
-  return `<div class="panel"><div class="panel-title">踏频-功率分析</div>
+  const styleHint = cadenceStyleHint(cp.style);
+  return `<div class="panel"><div class="panel-title">${esc(t("cad.title"))}</div>
     <div class="metric-grid" style="margin-bottom:0">
-      ${metricHtml("发力时段", fmtDur(cp.sample_sec), "", "功率 ≥ 75% FTP")}
-      ${metricHtml("平均踏频", cp.avg_cadence, "rpm")}
-      ${metricHtml("低踏频占比", cp.pct_low_cadence, "%", "< 80rpm")}
-      ${metricHtml("高踏频占比", cp.pct_high_cadence, "%", "> 90rpm")}
-      ${metricHtml("踏频-功率相关", cp.cadence_power_corr ?? "-")}
+      ${metricHtml(t("cad.effort"), fmtDur(cp.sample_sec), "", t("cad.effort_sub"))}
+      ${metricHtml(t("cad.avg"), cp.avg_cadence, "rpm")}
+      ${metricHtml(t("cad.low"), cp.pct_low_cadence, "%", t("cad.low_sub"))}
+      ${metricHtml(t("cad.high"), cp.pct_high_cadence, "%", t("cad.high_sub"))}
+      ${metricHtml(t("cad.corr"), cp.cadence_power_corr ?? "-")}
     </div>
-    <p class="muted" style="margin-top:10px;font-size:13px">${esc(cp.style_hint)}</p>
+    ${styleHint ? `<p class="muted" style="margin-top:10px;font-size:13px">${esc(styleHint)}</p>` : ""}
   </div>`;
 }
 
@@ -322,20 +331,20 @@ function anomaliesHtml(summary) {
   const an = summary.anomalies;
   const dq = summary.data_quality || {};
   const dqText = [
-    dq.power_coverage_pct != null ? `功率覆盖 ${dq.power_coverage_pct}%` : null,
-    dq.hr_coverage_pct != null ? `心率覆盖 ${dq.hr_coverage_pct}%` : null,
-    dq.dropped_records_no_timestamp ? `无时间戳丢弃 ${dq.dropped_records_no_timestamp} 条` : null,
-    dq.missing_seconds ? `缺失 ${dq.missing_seconds} 秒` : null,
+    dq.power_coverage_pct != null ? t("dq.power", { p: dq.power_coverage_pct }) : null,
+    dq.hr_coverage_pct != null ? t("dq.hr", { p: dq.hr_coverage_pct }) : null,
+    dq.dropped_records_no_timestamp ? t("dq.dropped", { n: dq.dropped_records_no_timestamp }) : null,
+    dq.missing_seconds ? t("dq.missing", { n: dq.missing_seconds }) : null,
   ].filter(Boolean).join(" · ");
   if (!an?.length && !dqText) return "";
   // 异常列表可折叠：超过 5 条默认收起（自动暂停产生的缺失标注可能几十条），点击展开
   const listHtml = an?.length
     ? `<details class="anomaly-details" ${an.length > 5 ? "" : "open"}>
-        <summary>异常标注 ${an.length} 条</summary>
+        <summary>${esc(t("dq.summary", { n: an.length }))}</summary>
         <ul class="anomaly-list">${an.map((x) => `<li>⚠ ${esc(x)}</li>`).join("")}</ul>
       </details>`
-    : `<p class="muted" style="font-size:13px">未发现异常</p>`;
-  return `<div class="panel"><div class="panel-title">数据质量与异常</div>
+    : `<p class="muted" style="font-size:13px">${esc(t("dq.clean"))}</p>`;
+  return `<div class="panel"><div class="panel-title">${esc(t("dq.title"))}</div>
     ${dqText ? `<p class="muted" style="font-size:12px;margin-bottom:8px">${esc(dqText)}</p>` : ""}
     ${listHtml}
   </div>`;

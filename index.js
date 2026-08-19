@@ -24,6 +24,7 @@ import {
   recentFormDaily,
   syncAthleteFromDb,
   getProfile,
+  getLang,
 } from "./src/db.js";
 import {
   buildReviewPrompt,
@@ -42,6 +43,7 @@ import {
   DATA_QUALITY,
   PEAK_CURVE,
 } from "./src/settings.js";
+import { normalizeLang } from "./src/i18n.js";
 
 // ---------------- 工具函数 ----------------
 
@@ -502,12 +504,10 @@ export function cadencePowerAnalysis(records) {
       ? Math.round((num / Math.sqrt(denC * denP)) * 100) / 100
       : null;
 
-  // 发力习惯判读
-  let styleHint = "踏频功率匹配正常";
-  if (pctLow >= 30)
-    styleHint = "偏低踏频高扭矩发力（力量型，可考虑提高踏频降低肌肉负担）";
-  else if (pctHigh >= 50)
-    styleHint = "偏高踏频发力（心肺型，注意高踏频下的心率成本）";
+  // 发力习惯判读（结构化枚举，界面/AI 按语言渲染；thresholds 见 CADENCE_ANALYSIS）
+  let style = "normal";
+  if (pctLow >= 30) style = "low_cadence";
+  else if (pctHigh >= 50) style = "high_cadence";
 
   return {
     sample_sec: pts.length,
@@ -515,7 +515,7 @@ export function cadencePowerAnalysis(records) {
     pct_low_cadence: pctLow,
     pct_high_cadence: pctHigh,
     cadence_power_corr: corr,
-    style_hint: styleHint,
+    style,
   };
 }
 
@@ -677,21 +677,21 @@ export async function analyzeFile(input, outDir) {
     if (p != null) peakCurve[label] = p;
   }
 
-  // 功率缺失片段 → 异常标注
+  // 功率缺失片段 → 异常标注（结构化：type 语言中立，展示时按语言格式化）
   const anomalies = [];
   for (const g of findPowerGaps(records)) {
-    anomalies.push(`功率缺失 ${g.duration_sec}s，起始 ${g.start}`);
+    anomalies.push({ type: "power_gap", duration_sec: g.duration_sec, at: g.start });
   }
   // 整段记录缺失检测（损坏文件兜底标注）
   for (const g of findMissingSpans(records, DATA_QUALITY.record_gap_sec)) {
-    anomalies.push(`记录缺失 ${g.duration_sec}s，起始 ${g.start}`);
+    anomalies.push({ type: "record_gap", duration_sec: g.duration_sec, at: g.start });
   }
   // 心率跳变检测（相邻秒差 > 25）
   for (let i = 1; i < records.length; i++) {
     const a = records[i - 1].heart_rate,
       b = records[i].heart_rate;
     if (a != null && b != null && Math.abs(b - a) > 25) {
-      anomalies.push(`心率跳变 ${a}→${b}，位于 ${records[i].timestamp}`);
+      anomalies.push({ type: "hr_jump", from: a, to: b, at: records[i].timestamp });
       if (anomalies.length > 20) break;
     }
   }
@@ -1010,7 +1010,7 @@ function loadSummaryJson(p) {
 }
 
 /** 周期规划提示词：月汇总 + 逐周 CTL/ATL/TSB + 近期训练清单 */
-function emitPlanPrompt(weeks, outPath) {
+function emitPlanPrompt(weeks, outPath, lang = "zh") {
   const daily = recentFormDaily(weeks * 7);
   if (!daily.length) {
     console.log("训练库为空，先分析若干 FIT 文件再生成周期规划提示词。");
@@ -1023,12 +1023,14 @@ function emitPlanPrompt(weeks, outPath) {
       recentActivities: recentActivities(10),
     },
     getProfile(),
+    undefined,
+    lang,
   );
   emitPrompt(text, outPath);
 }
 
 /** 赛前调整提示词：当前状态 + 走势 + 剩余天数 */
-function emitTaperPrompt(raceDate, outPath) {
+function emitTaperPrompt(raceDate, outPath, lang = "zh") {
   if (!raceDate || !/^\d{4}-\d{2}-\d{2}$/.test(raceDate)) {
     console.error("用法: node index.js --taper <比赛日期 YYYY-MM-DD> [输出.md]");
     process.exit(1);
@@ -1052,11 +1054,31 @@ function emitTaperPrompt(raceDate, outPath) {
       recentActivities: recentActivities(10),
     },
     getProfile(),
+    undefined,
+    lang,
   );
   emitPrompt(text, outPath);
 }
 
 // ---------------- 入口：单文件 / 批量 ----------------
+
+/** 提示词命令语言：--lang zh|en 显式指定（任意 argv 位置）> 训练库 lang > zh */
+function cliLang() {
+  const i = process.argv.indexOf("--lang");
+  if (i >= 0 && process.argv[i + 1]) return normalizeLang(process.argv[i + 1]);
+  try {
+    return getLang();
+  } catch {
+    return "zh";
+  }
+}
+
+/** 剔除 --lang 标志及其取值后的 argv（提示词命令的位置参数用，防止 --lang 被当输出路径） */
+function cliArgv() {
+  const i = process.argv.indexOf("--lang");
+  if (i < 0) return process.argv;
+  return process.argv.filter((_, idx) => idx !== i && idx !== i + 1);
+}
 
 async function main() {
   const input = process.argv[2];
@@ -1076,26 +1098,27 @@ async function main() {
     return;
   }
 
-  // ---- AI 提示词生成子命令（P2） ----
+  // ---- AI 提示词生成子命令（P2，--lang en 可生成英文提示词） ----
+  const args = cliArgv();
   if (input === "--review") {
     emitPrompt(
-      buildReviewPrompt(loadSummaryJson(process.argv[3]), getProfile()),
-      process.argv[4],
+      buildReviewPrompt(loadSummaryJson(args[3]), getProfile(), undefined, cliLang()),
+      args[4],
     );
     return;
   }
   if (input === "--plan") {
-    emitPlanPrompt(Number(process.argv[3]) || 8, process.argv[4]);
+    emitPlanPrompt(Number(args[3]) || 8, args[4], cliLang());
     return;
   }
   if (input === "--taper") {
-    emitTaperPrompt(process.argv[3], process.argv[4]);
+    emitTaperPrompt(args[3], args[4], cliLang());
     return;
   }
   if (input === "--compare") {
-    const a = loadSummaryJson(process.argv[3]);
-    const b = loadSummaryJson(process.argv[4]);
-    emitPrompt(buildComparePrompt(a, b, getProfile()), process.argv[5]);
+    const a = loadSummaryJson(args[3]);
+    const b = loadSummaryJson(args[4]);
+    emitPrompt(buildComparePrompt(a, b, getProfile(), undefined, cliLang()), args[5]);
     return;
   }
 

@@ -1,6 +1,7 @@
 /**
  * planning.js
  * 计划推演纯函数（无 IO，仿 src/ftp.js）：供 src/tools.js 的计算类工具调用。
+ * 消息文案经 src/i18n.js 按 lang 双语（缺省 zh，与历史逐字一致）。
  *
  * - simulateForm：给定当前 CTL/ATL 与未来逐日计划 TSS，按训练库同一递推口径
  *   （ctl += (tss - ctl)/42；atl += (tss - atl)/7，见 src/db.js computeForm）推演
@@ -8,6 +9,8 @@
  * - generateWorkout：按 WORKOUT_TEMPLATES 模板与可用时长拼装单次课表
  *   （热身/主组/冷身 + 瓦特区间 + TSS 估算），TSS 估算口径为逐段 时长秒 × IF² / 36。
  */
+
+import { t } from "./i18n.js";
 
 const r1 = (x) => Math.round(x * 10) / 10;
 
@@ -18,10 +21,11 @@ const r1 = (x) => Math.round(x * 10) / 10;
  * @param {number} p.startAtl 起始 ATL
  * @param {Array<{date:string,tss:number}>} p.plan 未来逐日计划（无训练日 tss=0），需按日期升序
  * @param {object} p.cfg FORM_SIMULATION 阈值配置
+ * @param {string} [p.lang] 风险消息语言（zh/en，默认 zh）
  * @returns {{projection: Array<[string,number,number,number]>, risk_flags: Array, end_form: object}}
  *   projection 每行为 [date, ctl, atl, tsb]（各保留 1 位小数）
  */
-export function simulateForm({ startCtl, startAtl, plan, cfg }) {
+export function simulateForm({ startCtl, startAtl, plan, cfg, lang = "zh" }) {
   let ctl = Number(startCtl) || 0;
   let atl = Number(startAtl) || 0;
   const projection = [];
@@ -46,7 +50,7 @@ export function simulateForm({ startCtl, startAtl, plan, cfg }) {
           start: projection[runStart][0],
           end: projection[i - 1][0],
           days,
-          message: `TSB 连续 ${days} 天低于 ${cfg.tsb_low}，深度疲劳风险`,
+          message: t(lang, "sim.tsb_low", { days, thr: cfg.tsb_low }),
         });
       }
       runStart = -1;
@@ -63,7 +67,7 @@ export function simulateForm({ startCtl, startAtl, plan, cfg }) {
         start: projection[i - 7][0],
         end: projection[i][0],
         ramp_pct: r1(ramp),
-        message: `CTL 周增幅 ${r1(ramp)}% 超过 ${cfg.ctl_ramp_pct}%，过度训练风险`,
+        message: t(lang, "sim.ctl_ramp", { pct: r1(ramp), thr: cfg.ctl_ramp_pct }),
       });
     }
   }
@@ -94,17 +98,19 @@ const LOW = { pct: [0.4, 0.55], if: 0.5 };
  * @param {number|null} [p.tsb] 当前 TSB；低于 tsbRecovery 阈值时自动降级为恢复课
  * @param {object} p.templates WORKOUT_TEMPLATES 配置
  * @param {number} p.tsbRecovery TSB 降级阈值（FORM_SIMULATION.tsb_recovery）
+ * @param {string} [p.lang] 消息语言（zh/en，默认 zh）
  * @returns 课表结构，或 { error }（未知类型 / 时长不足）
  */
-export function generateWorkout({ target, durationMinutes, ftpWatts, tsb = null, templates, tsbRecovery }) {
+export function generateWorkout({ target, durationMinutes, ftpWatts, tsb = null, templates, tsbRecovery, lang = "zh" }) {
   const notes = [];
   let key = target;
   if (tsb != null && Number.isFinite(Number(tsb)) && Number(tsb) < tsbRecovery && key !== "recovery") {
-    notes.push(`当前 TSB ${r1(Number(tsb))} 低于 ${tsbRecovery}，身体未恢复，自动降级为恢复骑`);
+    notes.push(t(lang, "plan.tsb_recovery", { tsb: r1(Number(tsb)), thr: tsbRecovery }));
     key = "recovery";
   }
   const tpl = templates[key];
-  if (!tpl) return { error: `未知课表类型: ${target}（可选: ${Object.keys(templates).join("/")}）` };
+  if (!tpl)
+    return { error: t(lang, "plan.unknown_type", { target, opts: Object.keys(templates).join("/") }) };
   const dur = Number(durationMinutes);
 
   // 稳态课（恢复/有氧耐力）：全程一个强度
@@ -139,7 +145,14 @@ export function generateWorkout({ target, durationMinutes, ftpWatts, tsb = null,
   }
   if (!chosen) {
     return {
-      error: `${dur} 分钟装不下 ${tpl.label} 课表（热身 ${tpl.warmup_min} + 至少 ${tpl.reps[0]}×${tpl.set.min_min} 分钟主组 + 冷身 ${tpl.cooldown_min}），请增加时长或换低时长课表`,
+      error: t(lang, "plan.too_short", {
+        dur,
+        label: tpl.label,
+        w: tpl.warmup_min,
+        reps: tpl.reps[0],
+        min: tpl.set.min_min,
+        c: tpl.cooldown_min,
+      }),
     };
   }
 

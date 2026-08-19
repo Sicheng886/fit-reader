@@ -3,9 +3,16 @@
  * 零依赖 SPA（浏览器原生 ES Module，无构建步骤）：hash 路由 + 顶栏导航 + 首开引导。
  * 共享基础在 js/common.js，SVG 图表在 js/charts.js，AI 报告/对话机制在 js/ai.js，
  * 各视图在 js/views/ 下（概览/训练/详情/上传/AI 报告/对话/记忆/设置）。
+ *
+ * 语言：启动时若本地无语言记录，按浏览器系统语言检测（中文 → zh，其余一律 en），
+ * 存 localStorage 并同步到训练库（POST /api/lang，AI 报告/对话语言缺省取此值）；
+ * 设置页可手动切换。静态导航文案按 data-i18n 应用。
  */
 
 import { $, app, esc, state, loadOverview, renderAthleteChip } from "./js/common.js";
+import {
+  t, detectLang, getStoredLang, setStoredLang, setLang,
+} from "./js/i18n.js";
 import { stopChatPolling } from "./js/ai.js";
 import { renderDashboard } from "./js/views/dashboard.js";
 import { renderActivities, renderActivityDetail } from "./js/views/activities.js";
@@ -15,6 +22,36 @@ import { renderChat } from "./js/views/chat.js";
 import { renderSettings } from "./js/views/settings.js";
 import { renderMemory } from "./js/views/memory.js";
 import { renderAbout } from "./js/views/about.js";
+
+// ---------------- 语言初始化（首次启动检测 → localStorage → 训练库同步） ----------------
+
+function initLang() {
+  let l = getStoredLang();
+  const detected = !l; // 无本地记录 = 首次启动
+  if (!l) {
+    l = detectLang();
+    setStoredLang(l);
+  }
+  setLang(l);
+  state.lang = l;
+  document.title = t("app.title");
+  // 静态导航文案（index.html 的 data-i18n / data-i18n-title）
+  document.querySelectorAll("[data-i18n]").forEach((el) => {
+    el.textContent = t(el.dataset.i18n);
+  });
+  document.querySelectorAll("[data-i18n-title]").forEach((el) => {
+    el.setAttribute("title", t(el.dataset.i18nTitle));
+  });
+  if (detected) {
+    // 首次检测出的语言同步到训练库（AI 提示词语言缺省取此值；失败不阻断）
+    fetch("/api/lang", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ lang: l }),
+    }).catch(() => {});
+  }
+}
+initLang();
 
 // ---------------- 路由 ----------------
 
@@ -63,7 +100,7 @@ async function route() {
     else if (view === "about") { setActiveTab("about"); renderAbout(); }
     else { setActiveTab("dashboard"); await renderDashboard(); }
   } catch (e) {
-    app.innerHTML = `<div class="callout">加载失败：${esc(e.message)}</div>`;
+    app.innerHTML = `<div class="callout">${esc(t("app.load_failed", { msg: e.message }))}</div>`;
   }
 }
 

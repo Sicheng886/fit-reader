@@ -18,6 +18,7 @@
 import http from "node:http";
 import https from "node:https";
 import { AI_CONFIG, AGENTIC } from "./settings.js";
+import { t } from "./i18n.js";
 
 /** 是否已配置 API 密钥（未配置时前端展示提示词供手动复制） */
 export function isAiConfigured() {
@@ -148,14 +149,14 @@ function requestChatCompletion(baseUrl, apiKey, requestBody, { signal, onStreamC
  * 2. 传入 messages 数组，直接作为 chat/completions 的 messages 参数（用于追问多轮对话）。
  *
  * @param {string|Array<{role:string, content:string}>} promptOrMessages 单条提示词或多轮消息数组
- * @param {{ onChunk?: (delta: string) => void, onHeartbeat?: () => void, timeoutMs?: number }} opts
+ * @param {{ onChunk?: (delta: string) => void, onHeartbeat?: () => void, timeoutMs?: number, lang?: string }} opts
  */
 export async function callAI(
   promptOrMessages,
-  { onChunk, onHeartbeat, timeoutMs } = {},
+  { onChunk, onHeartbeat, timeoutMs, lang = "zh" } = {},
 ) {
   const key = AI_CONFIG.api_key;
-  if (!key) throw new Error("未配置 AI 密钥（Web 设置页可配），无法调用 AI API");
+  if (!key) throw new Error(t(lang, "ai.no_key"));
   const { base_url, model } = aiConfigInfo();
   const effectiveTimeoutMs = timeoutMs ?? AI_CONFIG.timeout_ms;
   const useStream = AI_CONFIG.stream;
@@ -203,17 +204,10 @@ export async function callAI(
   } catch (e) {
     const reason = ctrl.signal.reason?.message || e.message || "";
     if (reason === "stall timeout") {
-      throw new Error(
-        `AI 流已空闲超过 ${stallMs / 1000} 秒未收到数据。` +
-          `可能是该模型/账号不真正流式输出，建议在设置页关闭流式。`,
-      );
+      throw new Error(t(lang, "ai.stall", { sec: stallMs / 1000 }));
     }
     if (reason === "total timeout" || e.name === "AbortError" || /aborted|timeout/i.test(reason)) {
-      throw new Error(
-        `AI 请求总时间超过 ${effectiveTimeoutMs / 1000} 秒。` +
-          `若模型确实需要更久，可在设置页增大超时时间；` +
-          `否则建议检查网络/API 可用性。`,
-      );
+      throw new Error(t(lang, "ai.total_timeout", { sec: effectiveTimeoutMs / 1000 }));
     }
     throw e;
   } finally {
@@ -240,17 +234,17 @@ export async function callAI(
  * @param {Array<{role:string, content:string}>} messages 初始消息数组
  * @param {Array<object>} tools OpenAI tools JSON schema 数组
  * @param {(name: string, args: object) => Promise<string>|string} executeTool 工具执行器，返回 JSON 字符串
- * @param {{ onHeartbeat?: () => void, onToolCall?: (name, args, result) => void, onDegrade?: (errMsg: string) => void, timeoutMs?: number }} opts
+ * @param {{ onHeartbeat?: () => void, onToolCall?: (name, args, result) => void, onDegrade?: (errMsg: string) => void, timeoutMs?: number, lang?: string }} opts
  * @returns {Promise<string>} 模型最终正文（各轮 assistant 正文取最长者，防中间轮写报告末轮只剩收尾片段）
  */
 export async function runAgentLoop(
   messages,
   tools,
   executeTool,
-  { onHeartbeat, onToolCall, onDegrade, timeoutMs } = {},
+  { onHeartbeat, onToolCall, onDegrade, timeoutMs, lang = "zh" } = {},
 ) {
   const key = AI_CONFIG.api_key;
-  if (!key) throw new Error("未配置 AI 密钥（Web 设置页可配），无法调用 AI API");
+  if (!key) throw new Error(t(lang, "ai.no_key"));
   const { base_url, model } = aiConfigInfo();
   const effectiveTimeoutMs = timeoutMs ?? AI_CONFIG.timeout_ms;
   const maxRounds = AGENTIC.max_rounds;
@@ -338,7 +332,7 @@ export async function runAgentLoop(
     // 轮数耗尽：去掉 tools 强制模型基于已获得的信息直接作答
     history.push({
       role: "user",
-      content: "工具调用次数已用完，请基于已获得的信息直接作答。",
+      content: t(lang, "ai.rounds_exhausted"),
     });
     const finalMsg = await callOnce(history, null);
     if (finalMsg?.content) {
@@ -355,11 +349,7 @@ export async function runAgentLoop(
       e.name === "AbortError" ||
       /aborted|timeout/i.test(reason)
     ) {
-      throw new Error(
-        `AI 请求总时间超过 ${effectiveTimeoutMs / 1000} 秒。` +
-          `若模型确实需要更久，可在设置页增大超时时间；` +
-          `否则建议检查网络/API 可用性。`,
-      );
+      throw new Error(t(lang, "ai.total_timeout", { sec: effectiveTimeoutMs / 1000 }));
     }
     throw e;
   } finally {

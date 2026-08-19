@@ -81,3 +81,37 @@ test("内置 skills/ 目录默认加载四个技能且跳过 _README", () => {
     "训练报告撰写规范",
   ]);
 });
+
+test("英文技能：.en.md 按语言加载，zh 不混入英文技能", () => {
+  write("01-zh.md", "# 中文技能\n\n内容甲");
+  write("01-en.en.md", "# English Skill\n\ncontent");
+  const zh = loadSkills("zh");
+  const en = loadSkills("en");
+  assert.deepEqual(zh.map((s) => s.title), ["中文技能"]);
+  assert.deepEqual(en.map((s) => s.title), ["English Skill"]);
+  assert.match(zh[0].content, /内容甲/);
+  assert.match(en[0].content, /content/);
+  // 语言缺省 = zh（与旧行为一致）
+  assert.deepEqual(loadSkills().map((s) => s.title), ["中文技能"]);
+});
+
+test("buildSkillsSection 按语言输出专业知识库段（en 为 Knowledge Base）", () => {
+  write("01-en.en.md", "# English Skill\n\ncontent");
+  const enSection = buildSkillsSection("en");
+  assert.match(enSection, /^## Knowledge Base/);
+  assert.match(enSection, /### English Skill\n\ncontent/);
+  // zh 语言不加载 .en.md → 无技能 → null
+  assert.equal(buildSkillsSection("zh"), null);
+});
+
+test("内置 skills/ 目录英文技能冒烟：四个 .en.md 按语言加载", () => {
+  delete process.env.FIT_SKILLS_DIR; // 用仓库默认目录
+  const titles = loadSkills("en").map((s) => s.title);
+  assert.deepEqual(titles, [
+    "Coggan Power Training System",
+    "TrainingPeaks Load Model (CTL / ATL / TSB)",
+    "Heart Rate Zones and HR Interpretation",
+    "Training Report Writing Standards",
+  ]);
+  assert.match(buildSkillsSection("en"), /^## Knowledge Base/);
+});

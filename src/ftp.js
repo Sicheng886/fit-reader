@@ -14,6 +14,7 @@
  */
 
 import { FTP_ESTIMATION } from "./settings.js";
+import { t } from "./i18n.js";
 
 /** 中位数（输入可含 null，自动过滤；空数组返回 null） */
 function median(values) {
@@ -31,12 +32,14 @@ const r1 = (x) => Math.round(x * 10) / 10;
  *   [{ file_name, date, duration_sec, summary }]
  * @param {object} athlete 骑手参数（ATHLETE：ftp_watts / max_hr）
  * @param {object} cfg 阈值配置（默认 settings.js 的 FTP_ESTIMATION）
+ * @param {string} [lang] 消息语言（zh/en，默认 zh；zh 与历史逐字一致）
  * @returns {{status: string, estimate: object|null, data_needs: string[], notes: string[]}}
  */
 export function estimateFtpFromHistory(
   activities,
   athlete,
   cfg = FTP_ESTIMATION,
+  lang = "zh",
 ) {
   const dataNeeds = [];
   const notes = [];
@@ -62,16 +65,12 @@ export function estimateFtpFromHistory(
   };
 
   if (usable.length < cfg.min_rides) {
-    dataNeeds.push(
-      `窗口内有效功率骑行仅 ${usable.length} 次（需 ≥${cfg.min_rides} 次）：` +
-        `请积累更多佩戴功率计的骑行数据后再估算`,
-    );
+    dataNeeds.push(t(lang, "ftp.few_rides", { n: usable.length, min: cfg.min_rides }));
     warnings.push("few_rides");
   }
   if (usable.length && withHr.length < usable.length) {
     dataNeeds.push(
-      `仅 ${withHr.length}/${usable.length} 次骑行有合格心率数据：` +
-        `后续骑行请全程佩戴心率带，以便心率交叉验证`,
+      t(lang, "ftp.hr_coverage", { n: withHr.length, total: usable.length }),
     );
     warnings.push("hr_coverage");
   }
@@ -91,10 +90,7 @@ export function estimateFtpFromHistory(
   const p20 = bestPeak("20min");
 
   if (!p20) {
-    dataNeeds.push(
-      "窗口内没有一次骑行包含连续 20 分钟的数据：" +
-        "请安排一次 ≥30 分钟、且含持续 20 分钟高功率输出的骑行（户外长坡或室内台子均可）",
-    );
+    dataNeeds.push(t(lang, "ftp.no_20min"));
     return {
       status: "insufficient",
       window_days: cfg.window_days,
@@ -102,7 +98,7 @@ export function estimateFtpFromHistory(
       estimate: null,
       data_needs: dataNeeds,
       notes,
-      references: methodReferences(),
+      references: methodReferences(lang),
     };
   }
 
@@ -123,14 +119,10 @@ export function estimateFtpFromHistory(
     }
   }
   if (!cpModel) {
-    notes.push(
-      "CP 模型不可用（5min 与 20min 峰功率形态退化）：CP 法被跳过，仅采用 Coggan 法",
-    );
+    notes.push(t(lang, "ftp.cp_unavailable"));
     warnings.push("single_method");
   } else {
-    dataNeeds.push(
-      "为提高 CP 模型精度：可做一次充分休息后的 3–8 分钟全力骑行（刷新无氧锚点）",
-    );
+    dataNeeds.push(t(lang, "ftp.cp_precision"));
   }
 
   // ---- 4. 方法二：Coggan 20min × 0.95 ----
@@ -164,20 +156,18 @@ export function estimateFtpFromHistory(
       hrCheck.best20_max_hr != null && hrCheck.best20_max_hr >= thresholdHr;
     if (!hrCheck.maximal_effort) {
       notes.push(
-        `20min 峰功率所在骑行（${p20.date}）心率峰值仅 ${hrCheck.best20_max_hr}bpm` +
-          `（全力阈值 ≥${thresholdHr}bpm）：该 20 分钟大概率不是全力输出，FTP 估值偏保守`,
+        t(lang, "ftp.not_maximal", {
+          date: p20.date,
+          hr: hrCheck.best20_max_hr,
+          thr: thresholdHr,
+        }),
       );
-      dataNeeds.push(
-        "需要一次充分休息后的 20 分钟全力测试（佩戴心率带、心率峰值应接近阈值区间），" +
-          "作为可靠的 FTP 锚点",
-      );
+      dataNeeds.push(t(lang, "ftp.maximal_test"));
       warnings.push("not_maximal");
     }
   } else {
-    notes.push("20min 峰功率所在骑行缺少心率数据，无法判定是否全力输出");
-    dataNeeds.push(
-      "下次做 20 分钟高功率骑行时请佩戴心率带，用于判定输出是否接近全力",
-    );
+    notes.push(t(lang, "ftp.anchor_no_hr"));
+    dataNeeds.push(t(lang, "ftp.anchor_hr"));
     warnings.push("not_maximal");
   }
 
@@ -201,17 +191,11 @@ export function estimateFtpFromHistory(
     let direction = "consistent";
     if (diff >= cfg.zone_mismatch_pct) {
       direction = "power_above_hr";
-      notes.push(
-        `功率高强度（Z5+）时间占比 ${pPct}% 显著高于心率高强度（Z4+）占比 ${hPct}%：` +
-          "当前 FTP 配置可能被低估（同样心率下能输出更高功率），或心率带数据异常",
-      );
+      notes.push(t(lang, "ftp.power_above_hr", { p: pPct, h: hPct }));
       warnings.push("zone_mismatch");
     } else if (diff <= -cfg.zone_mismatch_pct) {
       direction = "hr_above_power";
-      notes.push(
-        `心率高强度（Z4+）时间占比 ${hPct}% 显著高于功率高强度（Z5+）占比 ${pPct}%：` +
-          "当前 FTP 配置可能被高估，或存在疲劳/高温/脱水导致的心率漂移",
-      );
+      notes.push(t(lang, "ftp.hr_above_power", { h: hPct, p: pPct }));
       warnings.push("zone_mismatch");
     }
     hrCheck.zone_mismatch = {
@@ -228,10 +212,7 @@ export function estimateFtpFromHistory(
   );
   hrCheck.median_hr_drift_pct = driftMedian != null ? r1(driftMedian) : null;
   if (driftMedian != null && driftMedian > cfg.drift_warn_pct) {
-    notes.push(
-      `窗口内骑行心率漂移中位数 ${r1(driftMedian)}%（> ${cfg.drift_warn_pct}%）：` +
-        "存在明显的有氧解耦（疲劳累积/脱水/高温），近期数据用于 FTP 推断时需谨慎",
-    );
+    notes.push(t(lang, "ftp.drift", { d: r1(driftMedian), t: cfg.drift_warn_pct }));
     warnings.push("drift");
   }
 
@@ -262,7 +243,7 @@ export function estimateFtpFromHistory(
     range_low: rangeLow,
     range_high: rangeHigh,
     confidence,
-    confidence_note: confidenceNote(confidence),
+    confidence_note: confidenceNote(confidence, lang),
     current_ftp_w: athlete.ftp_watts,
     diff_w: ftpW - athlete.ftp_watts,
     methods: {
@@ -279,21 +260,14 @@ export function estimateFtpFromHistory(
     estimate,
     data_needs: dataNeeds,
     notes,
-    references: methodReferences(),
+    references: methodReferences(lang),
   };
 }
 
-function confidenceNote(c) {
-  if (c === "high") return "两种方法结果一致且心率验证通过，可信度高";
-  if (c === "medium")
-    return "存在警告项（非全力锚点/区间偏移/心率漂移/单一方法），估值供参考";
-  return "样本量不足，估值仅供参考，请按下方清单补充数据后重新估算";
+function confidenceNote(c, lang) {
+  return t(lang, `ftp.confidence.${c}`);
 }
 
-function methodReferences() {
-  return [
-    "Morton 双参数临界功率模型：P(t) = CP + W′/t，由 5min/20min 峰功率解出 CP ≈ FTP",
-    "Coggan & Allen《Training and Racing with a Power Meter》：FTP ≈ 20min 峰功率 × 0.95",
-    "心率交叉验证：全力阈值测试心率峰值应接近 HRmax 高位；功率/心率区间系统性偏移提示 FTP 配置漂移",
-  ];
+function methodReferences(lang) {
+  return [0, 1, 2].map((i) => t(lang, `ftp.ref.${i}`));
 }

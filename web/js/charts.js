@@ -3,7 +3,8 @@
  * 多系列折线图 / CTL-ATL-TSB 趋势图 / 分区分布横条 / 峰功率曲线柱。
  */
 
-import { fmtXAxis, num } from "./common.js";
+import { fmtXAxis, num, esc } from "./common.js";
+import { t } from "./i18n.js";
 
 /**
  * 通用多系列折线图（各系列独立纵轴缩放，图例显示均值）。
@@ -16,7 +17,7 @@ export function drawLineChart(container, series, { height = 280 } = {}) {
   const iw = W - PL - PR, ih = H - PT - PB;
   const visible = series.filter((s) => s.visible !== false && s.points.some((v) => v != null));
   if (!visible.length) {
-    container.innerHTML = `<div class="empty">没有可显示的时序数据</div>`;
+    container.innerHTML = `<div class="empty">${esc(t("chart.no_data"))}</div>`;
     return;
   }
   const n = Math.max(...visible.map((s) => s.points.length));
@@ -102,7 +103,7 @@ export function drawLineChart(container, series, { height = 280 } = {}) {
 /** CTL/ATL/TSB 逐日趋势图（共享纵轴 + TSS 背景柱） */
 export function drawTrendChart(container, daily, { height = 300 } = {}) {
   if (!daily?.length) {
-    container.innerHTML = `<div class="empty">训练库为空，先上传或分析若干 FIT 文件</div>`;
+    container.innerHTML = `<div class="empty">${esc(t("chart.empty_db"))}</div>`;
     return;
   }
   const W = 1000, H = height, PL = 34, PR = 34, PT = 12, PB = 22;
@@ -151,7 +152,7 @@ export function drawTrendChart(container, daily, { height = 300 } = {}) {
  * 右侧该区具体范围（ranges: { Z1: "0-72", ... }，由服务端按骑手参数换算）
  */
 export function zoneBarsHtml(dist, colors, ranges) {
-  if (!dist) return `<div class="empty">无分区数据</div>`;
+  if (!dist) return `<div class="empty">${esc(t("chart.no_zone"))}</div>`;
   return `<div class="zone-bars">${Object.entries(dist)
     .map(([z, pct]) => {
       const c = colors[z] || "#888";
@@ -172,7 +173,7 @@ export function zoneBarsHtml(dist, colors, ranges) {
 export function peakCurveHtml(curve, ftp) {
   if (!curve || !Object.keys(curve).length) return "";
   const max = Math.max(...Object.values(curve));
-  return `<div class="panel"><div class="panel-title">峰功率曲线</div>
+  return `<div class="panel"><div class="panel-title">${esc(t("chart.peak_curve"))}</div>
     <div class="peak-curve">${Object.entries(curve)
       .map(([label, w]) => {
         const pctFtp = ftp ? Math.round((w / ftp) * 100) : null;

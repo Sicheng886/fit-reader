@@ -3,14 +3,15 @@
  */
 
 import { $, app, esc, api, state } from "../common.js";
+import { t } from "../i18n.js";
 
 export function renderUpload() {
   app.innerHTML = `
-    <div class="view-title"><h1>上传分析</h1><span class="sub">FIT 文件 → 逐秒 CSV + 汇总 JSON + 自动入库</span></div>
+    <div class="view-title"><h1>${esc(t("up.title"))}</h1><span class="sub">${esc(t("up.sub"))}</span></div>
     <div class="dropzone" id="dz">
       <div class="dz-icon">▲</div>
-      <div class="dz-main">拖拽 .fit 文件到这里，或点击选择</div>
-      <div class="dz-sub">文件会保存到 input/ 目录并立即分析，结果写入 output/ 与训练库</div>
+      <div class="dz-main">${esc(t("up.drop"))}</div>
+      <div class="dz-sub">${esc(t("up.drop_sub"))}</div>
       <input type="file" id="fileInput" accept=".fit" style="display:none" multiple>
     </div>
     <div class="upload-status" id="upStatus"></div>`;
@@ -29,11 +30,11 @@ async function uploadFiles(files, statusEl) {
   for (const f of files) {
     if (!f.name.toLowerCase().endsWith(".fit")) {
       statusEl.className = "upload-status err";
-      statusEl.textContent = `跳过非 FIT 文件: ${f.name}`;
+      statusEl.textContent = t("up.skipped", { name: f.name });
       continue;
     }
     statusEl.className = "upload-status loading";
-    statusEl.textContent = `分析中: ${f.name} …`;
+    statusEl.textContent = t("up.analyzing", { name: f.name });
     try {
       const buf = await f.arrayBuffer();
       const r = await api(`/api/upload?filename=${encodeURIComponent(f.name)}`, {
@@ -43,11 +44,11 @@ async function uploadFiles(files, statusEl) {
       });
       const s = r.summary;
       statusEl.className = "upload-status ok";
-      statusEl.innerHTML = `完成: ${esc(f.name)} — NP ${s.power?.normalized_power ?? "-"}W / TSS ${s.power?.tss ?? "-"}　<a href="#/activity/${encodeURIComponent(r.file_name)}" style="color:var(--volt)">查看详情 →</a>`;
+      statusEl.innerHTML = `${esc(t("up.done", { name: f.name, np: s.power?.normalized_power ?? "-", tss: s.power?.tss ?? "-" }))}　<a href="#/activity/${encodeURIComponent(r.file_name)}" style="color:var(--volt)">${esc(t("up.view"))}</a>`;
       state.overview = null; // 让概览下次重新拉取
     } catch (e) {
       statusEl.className = "upload-status err";
-      statusEl.textContent = `失败: ${f.name} — ${e.message}`;
+      statusEl.textContent = t("up.failed", { name: f.name, msg: e.message });
     }
   }
 }

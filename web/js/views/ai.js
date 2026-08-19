@@ -3,65 +3,66 @@
  * 报告生成调用与追问机制在 ../ai.js，本文件只有页面骨架与事件绑定。
  */
 
-import { $, app, esc, loadOverview, sportLabel, trunc } from "../common.js";
+import { $, app, esc, loadOverview, trunc } from "../common.js";
+import { t, sportLabel } from "../i18n.js";
 import { runAi, loadReportList } from "../ai.js";
 
 export async function renderAI() {
-  app.innerHTML = `<div class="empty loading">加载中…</div>`;
+  app.innerHTML = `<div class="empty loading">${esc(t("common.loading"))}</div>`;
   const ov = await loadOverview();
   const opts = (ov.activities || [])
-    .map((a) => `<option value="${esc(a.file_name)}">${esc(a.date)} · ${sportLabel(a.sport)} · ${esc(trunc(a.file_name))}</option>`)
+    .map((a) => `<option value="${esc(a.file_name)}">${esc(a.date)} · ${esc(sportLabel(a.sport))} · ${esc(trunc(a.file_name))}</option>`)
     .join("");
   const aiInfo = ov.ai || {};
   const cfgNote = aiInfo.configured
-    ? `<div class="callout info">AI 已配置：${esc(aiInfo.base_url)} · 模型 ${esc(aiInfo.model)}</div>`
-    : `<div class="callout">未配置 AI 密钥 — 将生成完整提示词供手动复制到任意 AI（到「设置」页填入密钥后可直接输出报告）</div>`;
+    ? `<div class="callout info">${esc(t("aiPage.configured", { url: aiInfo.base_url, model: aiInfo.model }))}</div>`
+    : `<div class="callout">${esc(t("aiPage.not_configured"))}</div>`;
 
   app.innerHTML = `
-    <div class="view-title"><h1>AI 报告</h1><span class="sub">角色 + 指标口径 + 数据 + 问题，一键生成复盘报告</span></div>
+    <div class="view-title"><h1>${esc(t("aiPage.title"))}</h1><span class="sub">${esc(t("aiPage.sub"))}</span></div>
     ${cfgNote}
     <div class="ai-controls">
       <div class="ai-card">
-        <h3>单次复盘</h3>
-        <p>训练类型判定、强度分布评估、心率漂移解读、周期位置与改进建议。</p>
+        <h3>${esc(t("card.review"))}</h3>
+        <p>${esc(t("card.review.desc"))}</p>
         <select id="aiReviewSel">${opts}</select>
-        <button class="btn" id="btnAiReview"><span>生成复盘</span></button>
+        <button class="btn" id="btnAiReview"><span>${esc(t("btn.review"))}</span></button>
       </div>
       <div class="ai-card">
-        <h3>周期规划</h3>
-        <p>基于月汇总与 CTL 走势，评估体能增长是否安全，给出下周逐日训练建议。</p>
-        <button class="btn" id="btnAiPlan"><span>生成规划</span></button>
+        <h3>${esc(t("card.plan"))}</h3>
+        <p>${esc(t("card.plan.desc"))}</p>
+        <button class="btn" id="btnAiPlan"><span>${esc(t("btn.plan"))}</span></button>
       </div>
       <div class="ai-card">
-        <h3>赛前减量</h3>
-        <p>以比赛日 TSB +5~+15 为目标，生成逐日减量计划与赛前 48 小时安排。</p>
+        <h3>${esc(t("card.taper"))}</h3>
+        <p>${esc(t("card.taper.desc"))}</p>
         <input type="date" id="aiRaceDate">
-        <button class="btn" id="btnAiTaper"><span>生成减量计划</span></button>
+        <button class="btn" id="btnAiTaper"><span>${esc(t("btn.taper"))}</span></button>
       </div>
       <div class="ai-card">
-        <h3>两次对比</h3>
-        <p>归一化比较 IF / VI / 心率漂移 / 峰功率曲线，判断进步或退步。</p>
+        <h3>${esc(t("card.compare"))}</h3>
+        <p>${esc(t("card.compare.desc"))}</p>
         <select id="aiCmpA">${opts}</select>
         <select id="aiCmpB">${opts}</select>
-        <button class="btn" id="btnAiCompare"><span>生成对比</span></button>
+        <button class="btn" id="btnAiCompare"><span>${esc(t("btn.compare"))}</span></button>
       </div>
     </div>
     <div class="panel" id="aiPanel" style="display:none">
-      <div class="panel-title">AI 输出</div>
+      <div class="panel-title">${esc(t("aiPage.output"))}</div>
       <div id="aiBody"></div>
     </div>
     <div class="panel">
-      <div class="panel-title">历史 AI 报告（每类最近 30 条，自动滚动保留）</div>
+      <div class="panel-title">${esc(t("aiPage.history"))}</div>
       <div style="margin-bottom:12px">
         <select id="aiReportMode">
-          <option value="all">全部</option>
-          <option value="review">单次复盘</option>
-          <option value="plan">周期规划</option>
-          <option value="taper">赛前减量</option>
-          <option value="compare">两次对比</option>
+          <option value="all">${esc(t("aiPage.filter.all"))}</option>
+          <option value="review">${esc(t("mode.review"))}</option>
+          <option value="plan">${esc(t("mode.plan"))}</option>
+          <option value="taper">${esc(t("mode.taper"))}</option>
+          <option value="compare">${esc(t("mode.compare"))}</option>
         </select>
       </div>
-      <div id="aiReportList"><div class="empty">加载中…</div></div>
+      <div id="aiReportList"><div class="empty">${esc(t("common.loading"))}</div></div>
     </div>`;
 
   $("#btnAiReview").addEventListener("click", () =>
@@ -70,7 +71,7 @@ export async function renderAI() {
     runAi({ mode: "plan" }, $("#aiPanel"), $("#aiBody")));
   $("#btnAiTaper").addEventListener("click", () => {
     const d = $("#aiRaceDate").value;
-    if (!d) { alert("先选比赛日期"); return; }
+    if (!d) { alert(t("aiPage.race_required")); return; }
     runAi({ mode: "taper", race_date: d }, $("#aiPanel"), $("#aiBody"));
   });
   $("#btnAiCompare").addEventListener("click", () =>

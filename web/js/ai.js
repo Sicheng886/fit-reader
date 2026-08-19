@@ -2,11 +2,13 @@
  * ai.js — AI 报告与对话的共享机制（详情页 / AI 报告页 / 对话页三方共用，故独立于视图）
  * 历史报告列表与缓存加载、报告生成调用、报告追问（follow_up）、
  * 对话轮询（202 快照回填）、消息气泡渲染。
+ * 文案走 i18n.js；AI 请求体带 lang（随界面语言生成英文/中文报告与对话）。
  */
 
 import {
-  $, esc, api, state, confirmModal, MODE_LABEL, fmtLocalDateTime,
+  $, esc, api, state, confirmModal, fmtLocalDateTime,
 } from "./common.js";
+import { t, getLang, modeLabel } from "./i18n.js";
 
 // ---------------- 历史 AI 报告 ----------------
 
@@ -17,28 +19,28 @@ export async function loadReportList(container, mode = "all") {
     .sort((a, b) => (a.created_at < b.created_at ? 1 : -1))
     .slice(0, 30);
   if (!rows.length) {
-    container.innerHTML = `<div class="empty">暂无 ${mode === "all" ? "" : MODE_LABEL[mode]} 缓存报告</div>`;
+    container.innerHTML = `<div class="empty">${esc(t("ai.list.empty", { mode: mode === "all" ? "" : modeLabel(mode) }))}</div>`;
     return;
   }
   container.innerHTML = `<div class="table-wrap"><table class="data-table">
-    <tr><th>时间</th><th>类别</th><th>关联训练</th><th>状态</th><th>操作</th></tr>
+    <tr><th>${esc(t("ai.col.time"))}</th><th>${esc(t("ai.col.type"))}</th><th>${esc(t("ai.col.activity"))}</th><th>${esc(t("ai.col.status"))}</th><th>${esc(t("ai.col.action"))}</th></tr>
     ${rows.map((r) => {
-      const extra = r.race_date ? `比赛 ${r.race_date}` : r.compare_with ? `对比 ${esc(r.compare_with)}` : "";
+      const extra = r.race_date ? t("ai.race", { date: r.race_date }) : r.compare_with ? t("ai.compare", { name: esc(r.compare_with) }) : "";
       const statusBadge =
         r.status === "pending"
-          ? `<span class="status-badge pending">生成中…</span>`
+          ? `<span class="status-badge pending">${esc(t("ai.status.pending"))}</span>`
           : r.status === "failed"
-            ? `<span class="status-badge failed" title="${esc(r.error || "未知错误")}">失败</span>`
-            : `<span class="status-badge completed">完成</span>`;
+            ? `<span class="status-badge failed" title="${esc(r.error || t("ai.err.unknown"))}">${esc(t("ai.status.failed"))}</span>`
+            : `<span class="status-badge completed">${esc(t("ai.status.done"))}</span>`;
       const action =
         r.status === "pending"
           ? `<span class="muted">—</span>`
           : r.status === "failed"
-            ? `<button class="btn ghost" data-id="${r.id}"><span>查看原因</span></button>`
-            : `<button class="btn ghost" data-id="${r.id}"><span>加载</span></button>`;
+            ? `<button class="btn ghost" data-id="${r.id}"><span>${esc(t("ai.btn.reason"))}</span></button>`
+            : `<button class="btn ghost" data-id="${r.id}"><span>${esc(t("ai.btn.load"))}</span></button>`;
       return `<tr>
         <td>${fmtLocalDateTime(r.created_at)}</td>
-        <td>${MODE_LABEL[r.mode] ?? r.mode}</td>
+        <td>${modeLabel(r.mode)}</td>
         <td>${esc(r.file_name ?? extra ?? "-")}</td>
         <td>${statusBadge}</td>
         <td>${action}</td>
@@ -54,13 +56,13 @@ export async function renderCachedReport(id) {
   const panel = $("#aiPanel"), body = $("#aiBody");
   if (!panel || !body) return;
   panel.style.display = "";
-  body.innerHTML = `<div class="loading">加载报告…</div>`;
+  body.innerHTML = `<div class="loading">${esc(t("ai.loading"))}</div>`;
   panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
   state.aiThread = null;
   try {
     const r = await api(`/api/ai/report?id=${id}`);
     if (r.status === "pending") {
-      body.innerHTML = `<div class="callout info">报告正在生成中，请稍后再刷新查看。</div>`;
+      body.innerHTML = `<div class="callout info">${esc(t("ai.pending"))}</div>`;
       return;
     }
     body.innerHTML = `<div class="ai-result">${r.html || renderMarkdownFallback(r.markdown)}</div>`;
@@ -83,14 +85,14 @@ export function renderMarkdownFallback(md) {
 /** 调 /api/ai 并渲染结果（已配置→Markdown 报告；未配置→提示词 + 复制按钮） */
 export async function runAi(payload, panel, body) {
   panel.style.display = "";
-  body.innerHTML = `<div class="loading">AI 报告生成中，可能需要 30-60 秒…</div>`;
+  body.innerHTML = `<div class="loading">${esc(t("ai.generating"))}</div>`;
   panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
   state.aiThread = null; // 每次生成新报告时重置追问会话
   try {
     const r = await api("/api/ai", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
+      body: JSON.stringify({ ...payload, lang: getLang() }),
     });
     if (r.markdown) {
       body.innerHTML = `<div class="ai-result">${r.html || renderMarkdownFallback(r.markdown)}</div>`;
@@ -104,21 +106,21 @@ export async function runAi(payload, panel, body) {
       const list = $("#aiReportList");
       if (list) loadReportList(list, $("#aiReportMode")?.value || "all");
     } else if (r.accepted) {
-      body.innerHTML = `<div class="callout info">${esc(r.message || "AI 报告已提交，将在后台生成并保存。")}<br><span class="muted">请稍后从历史报告查看。</span></div>`;
+      body.innerHTML = `<div class="callout info">${esc(r.message || t("ai.submitted"))}<br><span class="muted">${esc(t("ai.submitted_hint"))}</span></div>`;
       // 在历史报告页面时刷新列表，让用户能看到后台生成的新报告
       const list = $("#aiReportList");
       if (list) loadReportList(list, $("#aiReportMode")?.value || "all");
     } else if (r.prompt != null) {
       body.innerHTML = `
-        <p class="muted" style="margin-bottom:10px">未配置 AI API，以下为完整提示词，复制到任意 AI 即可：</p>
-        <button class="btn ghost" id="btnCopyPrompt" style="margin-bottom:12px"><span>复制提示词</span></button>
+        <p class="muted" style="margin-bottom:10px">${esc(t("ai.not_configured"))}</p>
+        <button class="btn ghost" id="btnCopyPrompt" style="margin-bottom:12px"><span>${esc(t("ai.copy"))}</span></button>
         <div class="prompt-box">${esc(r.prompt)}</div>`;
       $("#btnCopyPrompt").addEventListener("click", async (e) => {
         await navigator.clipboard.writeText(r.prompt);
-        e.target.textContent = "已复制 ✓";
+        e.target.textContent = t("ai.copied");
       });
     } else {
-      body.innerHTML = `<div class="callout">AI 返回异常：${esc(JSON.stringify(r))}</div>`;
+      body.innerHTML = `<div class="callout">${esc(t("ai.anomaly", { json: JSON.stringify(r) }))}</div>`;
     }
   } catch (e) {
     body.innerHTML = `<div class="callout">${esc(e.message)}</div>`;
@@ -132,13 +134,13 @@ export function attachFollowUp(panel, body) {
   wrap.className = "ai-follow-up";
   wrap.innerHTML = `
     <div class="follow-up-title" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
-      <span>继续提问（快问快答，回答 ≤200 字）</span>
-      <button class="btn sm ghost" id="btnClearFollowUp" style="display:none"><span>清除追问</span></button>
+      <span>${esc(t("ai.followup.title"))}</span>
+      <button class="btn sm ghost" id="btnClearFollowUp" style="display:none"><span>${esc(t("ai.followup.clear"))}</span></button>
     </div>
     <div class="ai-chat" id="aiChat"></div>
     <div class="follow-up-input">
-      <textarea id="followQuestion" rows="2" placeholder="基于上方报告继续提问，AI 将结合本次训练的具体数据在 200 字以内作答…"></textarea>
-      <button class="btn sm" id="btnFollowAsk"><span>提问</span></button>
+      <textarea id="followQuestion" rows="2" placeholder="${esc(t("ai.followup.placeholder"))}"></textarea>
+      <button class="btn sm" id="btnFollowAsk"><span>${esc(t("ai.ask"))}</span></button>
     </div>`;
   body.appendChild(wrap);
 
@@ -149,7 +151,7 @@ export function attachFollowUp(panel, body) {
 
   clearBtn.addEventListener("click", () => {
     if (!state.aiThread?.chat_id) return;
-    confirmModal("清除追问", "将删除该报告下的全部追问消息，不可恢复。", async () => {
+    confirmModal(t("ai.clear.title"), t("ai.clear.text"), async () => {
       await api(`/api/ai/chat?id=${state.aiThread.chat_id}`, { method: "DELETE" });
       state.aiThread.chat_id = null;
       chat.innerHTML = "";
@@ -181,7 +183,7 @@ export function attachFollowUp(panel, body) {
     if (!q) return;
     input.value = "";
     btn.disabled = true;
-    btn.innerHTML = "<span>思考中…</span>";
+    btn.innerHTML = `<span>${esc(t("ai.thinking"))}</span>`;
     try {
       const r = await api("/api/ai/chat", {
         method: "POST",
@@ -192,6 +194,7 @@ export function attachFollowUp(panel, body) {
           report_id: state.aiThread.report_id ?? undefined,
           file_name: state.aiThread.file_name ?? undefined,
           message: q,
+          lang: getLang(),
         }),
       });
       state.aiThread.chat_id = r.chat_id;
@@ -204,7 +207,7 @@ export function attachFollowUp(panel, body) {
       );
     } finally {
       btn.disabled = false;
-      btn.innerHTML = "<span>提问</span>";
+      btn.innerHTML = `<span>${esc(t("ai.ask"))}</span>`;
     }
   };
 
@@ -235,7 +238,9 @@ export function pollAiChat(id, onSnapshot) {
   stopChatPolling();
   const tick = async () => {
     try {
-      const resp = await fetch(`/api/ai/chat?id=${id}`);
+      const resp = await fetch(`/api/ai/chat?id=${id}`, {
+        headers: { "X-Lang": getLang() },
+      });
       const chat = await resp.json();
       if (!resp.ok && resp.status !== 202) return;
       onSnapshot(chat);
@@ -256,9 +261,9 @@ export function chatMessagesHtml(messages) {
       if (m.role === "user")
         return `<div class="chat-bubble user"><p>${esc(m.content)}</p></div>`;
       if (m.status === "pending")
-        return `<div class="chat-bubble assistant pending"><p class="muted">思考中…</p></div>`;
+        return `<div class="chat-bubble assistant pending"><p class="muted">${esc(t("ai.thinking"))}</p></div>`;
       if (m.status === "failed")
-        return `<div class="chat-bubble assistant"><div class="callout">生成失败：${esc(m.error || "未知错误")}</div></div>`;
+        return `<div class="chat-bubble assistant"><div class="callout">${esc(t("ai.failed", { err: m.error || t("ai.err.unknown") }))}</div></div>`;
       return `<div class="chat-bubble assistant"><div class="ai-result">${m.html || renderMarkdownFallback(m.content)}</div></div>`;
     })
     .join("");

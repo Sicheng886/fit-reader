@@ -75,6 +75,8 @@ import {
   listMemories,
   listAllMemories,
   deleteMemory,
+  getLang,
+  setLang,
 } from "./src/db.js";
 import {
   buildReviewPrompt,
@@ -89,13 +91,15 @@ import {
   compactSummaryForPrompt,
   thinToWeekly,
   ROLE,
+  ROLE_EN,
 } from "./src/prompts.js";
 import { callAI, runAgentLoop, isAiConfigured, aiConfigInfo } from "./src/ai.js";
 import { buildSkillsSection } from "./src/skills.js";
-import { TOOL_DEFS, executeTool } from "./src/tools.js";
+import { toolDefs, executeTool } from "./src/tools.js";
 import { loadRecords, safeName } from "./src/records.js";
 import { AI_CONFIG, ATHLETE, FTP_ESTIMATION, POWER_ZONES, HR_ZONES } from "./src/settings.js";
 import { estimateFtpFromHistory } from "./src/ftp.js";
+import { normalizeLang, t, formatAnomaly } from "./src/i18n.js";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const WEB_DIR = path.join(ROOT, "web");
@@ -121,6 +125,37 @@ function sendJson(res, status, obj) {
   res.end(body);
 }
 
+/**
+ * 请求语言解析：显式 lang 参数（query / X-Lang 头）> 训练库 lang > Accept-Language
+ * （zh → zh，其他具体语言标签 → en；`*`/空视为无偏好回落 zh）> zh 默认。
+ * 前端 api() 统一带 X-Lang 头，AI 接口再以请求体 lang 为准（见各 handler）。
+ */
+function resolveLang(req, url) {
+  const q = url?.searchParams.get("lang");
+  if (q) return normalizeLang(q);
+  const h = req.headers["x-lang"];
+  if (h) return normalizeLang(h);
+  try {
+    const dbLang = getLang();
+    if (dbLang === "en") return "en";
+  } catch {
+    // 训练库不可用时回落后续判定
+  }
+  const al = String(req.headers["accept-language"] || "").replace(/\*/g, "").trim();
+  if (/zh/i.test(al)) return "zh";
+  if (/[a-z]{2}/i.test(al)) return "en"; // 非中文的具体语言一律英文
+  return "zh";
+}
+
+/** TSB 状态枚举 → i18n key（与 db.js computeForm 的 form_state 口径一致） */
+const FORM_STATE_KEYS = {
+  fresh: "form.note.0",
+  good: "form.note.1",
+  balanced: "form.note.2",
+  fatigued: "form.note.3",
+  overtrained: "form.note.4",
+};
+
 /** 分区定义 × 基准值（FTP/最大心率）→ 各区具体范围文本，如 { Z2: "72-98", Z7: "195+" } */
 function zoneRanges(zones, base) {
   const out = {};
@@ -131,14 +166,14 @@ function zoneRanges(zones, base) {
   return out;
 }
 
-function readBody(req, limitBytes = 64 * 1024 * 1024) {
+function readBody(req, limitBytes = 64 * 1024 * 1024, lang = "zh") {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let size = 0;
     req.on("data", (c) => {
       size += c.length;
       if (size > limitBytes) {
-        reject(new Error("请求体过大"));
+        reject(new Error(t(lang, "srv.body_too_large")));
         req.destroy();
         return;
       }
@@ -151,40 +186,47 @@ function readBody(req, limitBytes = 64 * 1024 * 1024) {
 
 /**
  * AI 调用统一入口：agentic 开启（AI_CONFIG.agentic，默认开）时走 runAgentLoop
- * 并挂训练库查询工具（function calling），工具调用与降级记服务日志；
- * 关闭时维持原单轮 callAI（含流式设置）。
+ * 并挂训练库查询工具（function calling，schema 按 lang 本地化），工具调用与
+ * 降级记服务日志；关闭时维持原单轮 callAI（含流式设置）。
  * source 为场景标记（review/plan/taper/compare/follow_up/chat），透传给
- * save_memory 工具写入 ai_memories.source。
+ * save_memory 工具写入 ai_memories.source；lang 决定工具描述/错误消息语言。
  */
-function callAiMaybeAgentic(messages, { onChunk, onHeartbeat, source } = {}) {
+function callAiMaybeAgentic(messages, { onChunk, onHeartbeat, source, lang = "zh" } = {}) {
   if (AI_CONFIG.agentic !== false) {
-    return runAgentLoop(messages, TOOL_DEFS, (name, args) => executeTool(name, args, { source }), {
-      onHeartbeat,
-      onToolCall: (name, args, result) => {
-        const chars = typeof result === "string" ? result.length : 0;
-        console.log(`[AI tool] ${name}(${JSON.stringify(args)}) → ${chars} 字符`);
+    return runAgentLoop(
+      messages,
+      toolDefs(lang),
+      (name, args) => executeTool(name, args, { source, lang }),
+      {
+        lang,
+        onHeartbeat,
+        onToolCall: (name, args, result) => {
+          const chars = typeof result === "string" ? result.length : 0;
+          console.log(`[AI tool] ${name}(${JSON.stringify(args)}) → ${chars} 字符`);
+        },
+        onDegrade: (errMsg) =>
+          console.warn(`[AI] 模型不支持 tools，已降级为单轮调用（${errMsg}）`),
       },
-      onDegrade: (errMsg) =>
-        console.warn(`[AI] 模型不支持 tools，已降级为单轮调用（${errMsg}）`),
-    });
+    );
   }
-  return callAI(messages, { onChunk, onHeartbeat });
+  return callAI(messages, { onChunk, onHeartbeat, lang });
 }
 
-/** 组装 AI 提示词（复用 P2 模板），返回 { prompt } 或抛出带 message 的错误 */
-function buildPromptForMode(body) {
+/** 组装 AI 提示词（复用 P2 模板，按 lang 双语），返回 { prompt } 或抛出带 message 的错误 */
+function buildPromptForMode(body, lang = "zh") {
   const mode = body?.mode;
   const profile = getProfile(); // 用户背景与训练目标，四个场景统一纳入考量
-  const skills = buildSkillsSection(); // 专业知识库（skills/ 目录），四个场景统一注入
+  const skills = buildSkillsSection(lang); // 专业知识库（skills/ 目录，按语言加载），四场景统一注入
   if (mode === "review") {
     const name = safeName(body.file_name);
     const summary = name && getActivitySummary(name);
-    if (!summary) throw new Error(`训练库中找不到: ${body.file_name ?? "(未提供)"}`);
-    return buildReviewPrompt(summary, profile, skills);
+    if (!summary)
+      throw new Error(t(lang, "tool.summary_not_found", { name: body.file_name ?? "(未提供)" }));
+    return buildReviewPrompt(summary, profile, skills, lang);
   }
   if (mode === "plan") {
     const daily = recentFormDaily(56);
-    if (!daily.length) throw new Error("训练库为空");
+    if (!daily.length) throw new Error(t(lang, "srv.library_empty"));
     return buildPlanPrompt(
       {
         months: monthlySummary(3),
@@ -193,15 +235,16 @@ function buildPromptForMode(body) {
       },
       profile,
       skills,
+      lang,
     );
   }
   if (mode === "taper") {
     const raceDate = body.race_date;
     if (!raceDate || !/^\d{4}-\d{2}-\d{2}$/.test(raceDate))
-      throw new Error("race_date 需为 YYYY-MM-DD");
+      throw new Error(t(lang, "srv.race_date"));
     const today = new Date().toISOString().slice(0, 10);
     const form = computeForm(today);
-    if (!form) throw new Error("训练库为空");
+    if (!form) throw new Error(t(lang, "srv.library_empty"));
     const daysLeft = Math.round(
       (new Date(raceDate + "T00:00:00Z") - new Date(today + "T00:00:00Z")) / 86400000,
     );
@@ -215,6 +258,7 @@ function buildPromptForMode(body) {
       },
       profile,
       skills,
+      lang,
     );
   }
   if (mode === "compare") {
@@ -222,10 +266,10 @@ function buildPromptForMode(body) {
     const b = safeName(body.compare_with);
     const sa = a && getActivitySummary(a);
     const sb = b && getActivitySummary(b);
-    if (!sa || !sb) throw new Error("对比训练在训练库中找不到");
-    return buildComparePrompt(sa, sb, profile, skills);
+    if (!sa || !sb) throw new Error(t(lang, "srv.compare_not_found"));
+    return buildComparePrompt(sa, sb, profile, skills, lang);
   }
-  throw new Error(`未知 mode: ${mode}`);
+  throw new Error(t(lang, "srv.unknown_mode", { mode }));
 }
 
 /**
@@ -234,42 +278,43 @@ function buildPromptForMode(body) {
  * - chat：教练角色 + 指标口径 + 专业知识库 + 用户背景 + 对话指令 + 工具指引 + 用户记忆段。
  * 记忆段只在 agentic 模式注入——其中的 save_memory 指引依赖工具调用能力。
  * 专业知识库段（src/skills.js）只注入 chat 与四场景报告；follow_up 快答场景不注入。
+ * lang 为提交时的请求语言（zh/en，缺省 zh）。
  */
-function buildChatSystemSection(chat) {
+function buildChatSystemSection(chat, lang = "zh") {
   const agentic = AI_CONFIG.agentic !== false;
   if (chat.mode === "follow_up") {
-    let s = buildChatInstruction("follow_up");
+    let s = buildChatInstruction("follow_up", lang);
     // 报告正文：追问以报告内容为锚（报告可能已被滚动清理，缺则仅靠训练数据）
     if (chat.report_id != null) {
       const rep = getAiReport(chat.report_id);
-      if (rep?.markdown) s += `\n\n训练分析报告：\n${rep.markdown}`;
+      if (rep?.markdown) s += `\n\n${t(lang, "srv.report_body")}\n${rep.markdown}`;
     }
     // 追问只带报告会让 AI 无法回答报告未覆盖的细节，按 file_name 附压缩后的训练数据
     const summary = chat.file_name ? getActivitySummary(chat.file_name) : null;
     if (summary) {
       s +=
-        "\n\n本次训练数据（供引用具体细节）：\n```json\n" +
-        JSON.stringify(compactSummaryForPrompt(summary)) +
+        `\n\n${t(lang, "srv.training_data")}\n` + "```json\n" +
+        JSON.stringify(compactSummaryForPrompt(summary, lang)) +
         "\n```";
     }
     if (agentic) {
-      s += "\n\n" + buildAgenticSection();
-      const mem = buildMemorySection(listMemories());
+      s += "\n\n" + buildAgenticSection(lang);
+      const mem = buildMemorySection(listMemories(), lang);
       if (mem) s += "\n\n" + mem;
     }
     return s;
   }
   // chat：无报告上下文的直接对话，取数全靠 agentic 工具调用
   const parts = [
-    ROLE,
-    buildMetricGlossary(),
-    buildSkillsSection(),
-    buildProfileSection(getProfile()),
-    buildChatInstruction("chat"),
+    lang === "en" ? ROLE_EN : ROLE,
+    buildMetricGlossary(lang),
+    buildSkillsSection(lang),
+    buildProfileSection(getProfile(), lang),
+    buildChatInstruction("chat", lang),
   ].filter(Boolean);
   if (agentic) {
-    parts.push(buildAgenticSection());
-    const mem = buildMemorySection(listMemories());
+    parts.push(buildAgenticSection(lang));
+    const mem = buildMemorySection(listMemories(), lang);
     if (mem) parts.push(mem);
   }
   return parts.join("\n\n");
@@ -278,6 +323,31 @@ function buildChatSystemSection(chat) {
 // ---------------- 请求处理 ----------------
 
 async function handleApi(req, res, url) {
+  const lang = resolveLang(req, url); // 请求语言：X-Lang 头/query > 训练库 > Accept-Language > zh
+
+  // GET /api/lang  当前界面语言（前端首次启动检测后写入，AI 提示词语言缺省取此值）
+  if (req.method === "GET" && url.pathname === "/api/lang") {
+    sendJson(res, 200, { lang: getLang() });
+    return;
+  }
+
+  // POST /api/lang {lang: 'zh'|'en'}  保存界面语言（写训练库 settings 表）
+  if (req.method === "POST" && url.pathname === "/api/lang") {
+    let body;
+    try {
+      body = JSON.parse((await readBody(req, 1024 * 1024, lang)).toString("utf8"));
+    } catch {
+      return sendJson(res, 400, { error: t(lang, "srv.body_json") });
+    }
+    try {
+      const saved = setLang(body?.lang);
+      sendJson(res, 200, { applied: true, lang: saved });
+    } catch (e) {
+      sendJson(res, 400, { error: e.message });
+    }
+    return;
+  }
+
   // GET /api/overview
   if (req.method === "GET" && url.pathname === "/api/overview") {
     const { athlete, configured } = getAthleteState();
@@ -303,12 +373,12 @@ async function handleApi(req, res, url) {
   if (req.method === "POST" && url.pathname === "/api/athlete") {
     let body;
     try {
-      body = JSON.parse((await readBody(req, 1024 * 1024)).toString("utf8"));
+      body = JSON.parse((await readBody(req, 1024 * 1024, lang)).toString("utf8"));
     } catch {
-      return sendJson(res, 400, { error: "请求体需为 JSON" });
+      return sendJson(res, 400, { error: t(lang, "srv.body_json") });
     }
     try {
-      const athlete = setAthlete(body ?? {});
+      const athlete = setAthlete(body ?? {}, lang);
       sendJson(res, 200, { applied: true, athlete });
     } catch (e) {
       sendJson(res, 400, { error: e.message });
@@ -326,12 +396,12 @@ async function handleApi(req, res, url) {
   if (req.method === "POST" && url.pathname === "/api/ai-config") {
     let body;
     try {
-      body = JSON.parse((await readBody(req, 1024 * 1024)).toString("utf8"));
+      body = JSON.parse((await readBody(req, 1024 * 1024, lang)).toString("utf8"));
     } catch {
-      return sendJson(res, 400, { error: "请求体需为 JSON" });
+      return sendJson(res, 400, { error: t(lang, "srv.body_json") });
     }
     try {
-      const config = setAiConfig(body ?? {});
+      const config = setAiConfig(body ?? {}, lang);
       sendJson(res, 200, { applied: true, config });
     } catch (e) {
       sendJson(res, 400, { error: e.message });
@@ -343,16 +413,16 @@ async function handleApi(req, res, url) {
   if (req.method === "POST" && url.pathname === "/api/activity/category") {
     let body;
     try {
-      body = JSON.parse((await readBody(req, 1024 * 1024)).toString("utf8"));
+      body = JSON.parse((await readBody(req, 1024 * 1024, lang)).toString("utf8"));
     } catch {
-      return sendJson(res, 400, { error: "请求体需为 JSON" });
+      return sendJson(res, 400, { error: t(lang, "srv.body_json") });
     }
     const name = safeName(body?.name);
-    if (!name) return sendJson(res, 400, { error: "name 参数无效" });
+    if (!name) return sendJson(res, 400, { error: t(lang, "srv.name_invalid") });
     if (!isValidCategory(body?.category))
-      return sendJson(res, 400, { error: "category 需为 training/race/recovery/leisure" });
+      return sendJson(res, 400, { error: t(lang, "srv.category_invalid") });
     try {
-      setActivityCategory(name, body.category);
+      setActivityCategory(name, body.category, lang);
       sendJson(res, 200, { ok: true });
     } catch (e) {
       sendJson(res, 404, { error: e.message });
@@ -364,17 +434,17 @@ async function handleApi(req, res, url) {
   if (req.method === "POST" && url.pathname === "/api/activity/note") {
     let body;
     try {
-      body = JSON.parse((await readBody(req, 1024 * 1024)).toString("utf8"));
+      body = JSON.parse((await readBody(req, 1024 * 1024, lang)).toString("utf8"));
     } catch {
-      return sendJson(res, 400, { error: "请求体需为 JSON" });
+      return sendJson(res, 400, { error: t(lang, "srv.body_json") });
     }
     const name = safeName(body?.name);
-    if (!name) return sendJson(res, 400, { error: "name 参数无效" });
+    if (!name) return sendJson(res, 400, { error: t(lang, "srv.name_invalid") });
     try {
-      const r = setActivityNote(name, body?.note ?? "");
+      const r = setActivityNote(name, body?.note ?? "", lang);
       sendJson(res, 200, r);
     } catch (e) {
-      const status = e.message === "训练不存在" ? 404 : 400;
+      const status = e.message === t(lang, "activity.not_found") ? 404 : 400;
       sendJson(res, status, { error: e.message });
     }
     return;
@@ -390,12 +460,12 @@ async function handleApi(req, res, url) {
   if (req.method === "POST" && url.pathname === "/api/profile") {
     let body;
     try {
-      body = JSON.parse((await readBody(req, 1024 * 1024)).toString("utf8"));
+      body = JSON.parse((await readBody(req, 1024 * 1024, lang)).toString("utf8"));
     } catch {
-      return sendJson(res, 400, { error: "请求体需为 JSON" });
+      return sendJson(res, 400, { error: t(lang, "srv.body_json") });
     }
     try {
-      sendJson(res, 200, { applied: true, profile: setProfile(body ?? {}) });
+      sendJson(res, 200, { applied: true, profile: setProfile(body ?? {}, lang) });
     } catch (e) {
       sendJson(res, 400, { error: e.message });
     }
@@ -406,10 +476,17 @@ async function handleApi(req, res, url) {
   if (req.method === "GET" && url.pathname === "/api/activity") {
     const name = safeName(url.searchParams.get("name"));
     const summary = name && getActivitySummary(name);
-    if (!summary) return sendJson(res, 404, { error: "训练不存在" });
+    if (!summary) return sendJson(res, 404, { error: t(lang, "srv.activity_not_found") });
+    // 异常标注按请求语言渲染（结构化 anomalies → 文本；旧数据字符串原样透传）
+    if (Array.isArray(summary.anomalies)) {
+      summary.anomalies = summary.anomalies.map((a) => formatAnomaly(a, lang));
+    }
+    // form_note 按 form_state 本地化（旧数据无 form_state 时保留存档文本）
+    const ac = summary.athlete_context ?? {};
+    const fsKey = FORM_STATE_KEYS[ac.form_state];
+    if (fsKey) ac.form_note = t(lang, fsKey);
     // 分区具体范围（W / bpm）：按分析当时的骑手参数（athlete_context）换算，
     // 与分区分布条的计算口径一致；库中无 athlete_context 时回落当前生效参数
-    const ac = summary.athlete_context ?? {};
     const zone_ranges = {
       power: zoneRanges(POWER_ZONES, ac.ftp_watts ?? ATHLETE.ftp_watts),
       hr: zoneRanges(HR_ZONES, ac.max_hr ?? ATHLETE.max_hr),
@@ -423,7 +500,7 @@ async function handleApi(req, res, url) {
     const name = safeName(url.searchParams.get("name"));
     const data = name && loadRecords(name, { outputDir: OUTPUT_DIR });
     if (!data)
-      return sendJson(res, 404, { error: "时序数据不存在（可能分析时输出目录不同）" });
+      return sendJson(res, 404, { error: t(lang, "srv.records_not_found") });
     sendJson(res, 200, data);
     return;
   }
@@ -432,9 +509,9 @@ async function handleApi(req, res, url) {
   if (req.method === "POST" && url.pathname === "/api/upload") {
     const name = safeName(url.searchParams.get("filename"));
     if (!name || !name.toLowerCase().endsWith(".fit"))
-      return sendJson(res, 400, { error: "filename 需为 .fit 文件" });
-    const buf = await readBody(req);
-    if (!buf.length) return sendJson(res, 400, { error: "空文件" });
+      return sendJson(res, 400, { error: t(lang, "srv.filename_fit") });
+    const buf = await readBody(req, 64 * 1024 * 1024, lang);
+    if (!buf.length) return sendJson(res, 400, { error: t(lang, "srv.file_empty") });
     fs.mkdirSync(INPUT_DIR, { recursive: true });
     fs.mkdirSync(OUTPUT_DIR, { recursive: true });
     const fitPath = path.join(INPUT_DIR, name);
@@ -444,22 +521,24 @@ async function handleApi(req, res, url) {
       sendJson(res, 200, { file_name: name, summary });
     } catch (e) {
       fs.rmSync(fitPath, { force: true }); // 分析失败的文件不留档
-      sendJson(res, 422, { error: `解析失败: ${e.message}` });
+      sendJson(res, 422, { error: t(lang, "srv.parse_failed", { msg: e.message }) });
     }
     return;
   }
 
-  // POST /api/ai  {mode, file_name?, compare_with?, race_date?}
+  // POST /api/ai  {mode, file_name?, compare_with?, race_date?, lang?}
   if (req.method === "POST" && url.pathname === "/api/ai") {
     let body;
     try {
-      body = JSON.parse((await readBody(req, 1024 * 1024)).toString("utf8"));
+      body = JSON.parse((await readBody(req, 1024 * 1024, lang)).toString("utf8"));
     } catch {
-      return sendJson(res, 400, { error: "请求体需为 JSON" });
+      return sendJson(res, 400, { error: t(lang, "srv.body_json") });
     }
+    // 报告语言：请求体 lang 显式指定（前端随界面语言提交）> 请求头/训练库解析
+    const aiLang = body?.lang ? normalizeLang(body.lang) : lang;
     let prompt;
     try {
-      prompt = buildPromptForMode(body);
+      prompt = buildPromptForMode(body, aiLang);
     } catch (e) {
       return sendJson(res, 400, { error: e.message });
     }
@@ -473,12 +552,12 @@ async function handleApi(req, res, url) {
     try {
       reportId = createPendingAiReport(body.mode, body, prompt);
     } catch (e) {
-      return sendJson(res, 500, { error: `创建报告记录失败: ${e.message}` });
+      return sendJson(res, 500, { error: t(aiLang, "srv.report_create_failed", { msg: e.message }) });
     }
     sendJson(res, 202, {
       accepted: true,
       report_id: reportId,
-      message: "AI 分析已提交，将在后台生成并保存，请稍后从历史报告查看。",
+      message: t(aiLang, "srv.ai_submitted"),
     });
     (async () => {
       try {
@@ -487,14 +566,15 @@ async function handleApi(req, res, url) {
         // 复制提示词时不含这两段——复制出去的提示词无法回调本机工具）
         let finalPrompt = prompt;
         if (AI_CONFIG.agentic !== false) {
-          finalPrompt += "\n\n" + buildAgenticSection();
-          const mem = buildMemorySection(listMemories());
+          finalPrompt += "\n\n" + buildAgenticSection(aiLang);
+          const mem = buildMemorySection(listMemories(), aiLang);
           if (mem) finalPrompt += "\n\n" + mem;
         }
         const markdown = await callAiMaybeAgentic(
           [{ role: "user", content: finalPrompt }],
           {
             source: body.mode, // 场景标记：save_memory 写入 ai_memories.source
+            lang: aiLang,
             onChunk: (delta) => {
               chunkCount++;
               charCount += delta.length;
@@ -521,32 +601,33 @@ async function handleApi(req, res, url) {
     return;
   }
 
-  // POST /api/ai/chat  {chat_id?, mode:'follow_up'|'chat', message, report_id?, file_name?}
+  // POST /api/ai/chat  {chat_id?, mode:'follow_up'|'chat', message, report_id?, file_name?, lang?}
   // 落库 user 消息 + pending 占位 → 202；后台 agentic 生成后回填 completed/failed
   if (req.method === "POST" && url.pathname === "/api/ai/chat") {
     let body;
     try {
-      body = JSON.parse((await readBody(req, 1024 * 1024)).toString("utf8"));
+      body = JSON.parse((await readBody(req, 1024 * 1024, lang)).toString("utf8"));
     } catch {
-      return sendJson(res, 400, { error: "请求体需为 JSON" });
+      return sendJson(res, 400, { error: t(lang, "srv.body_json") });
     }
+    const chatLang = body?.lang ? normalizeLang(body.lang) : lang;
     if (!isAiConfigured())
-      return sendJson(res, 400, { error: "未配置 AI 密钥（设置页可配），无法使用对话" });
+      return sendJson(res, 400, { error: t(chatLang, "srv.ai_key_missing") });
     const mode = body?.mode;
     if (!/^(follow_up|chat)$/.test(mode ?? ""))
-      return sendJson(res, 400, { error: "mode 需为 follow_up/chat" });
+      return sendJson(res, 400, { error: t(chatLang, "srv.mode_invalid") });
     const message = String(body?.message ?? "").trim();
-    if (!message) return sendJson(res, 400, { error: "message 不能为空" });
+    if (!message) return sendJson(res, 400, { error: t(chatLang, "srv.message_empty") });
     if (message.length > 2000)
-      return sendJson(res, 400, { error: "message 过长（上限 2000 字）" });
+      return sendJson(res, 400, { error: t(chatLang, "srv.message_too_long", { n: 2000 }) });
 
     let chatId = body?.chat_id;
     if (chatId != null) {
       // 继续既有对话：校验存在（404），沿用其 mode/report_id/file_name
       chatId = Number(chatId);
       if (!Number.isInteger(chatId) || chatId <= 0)
-        return sendJson(res, 400, { error: "chat_id 参数无效" });
-      if (!getAiChat(chatId)) return sendJson(res, 404, { error: "对话不存在" });
+        return sendJson(res, 400, { error: t(chatLang, "srv.chat_id_invalid") });
+      if (!getAiChat(chatId)) return sendJson(res, 404, { error: t(chatLang, "srv.chat_not_found") });
     } else {
       // 新建对话：title 取首条消息前 50 字
       const fileName = body?.file_name ? safeName(body.file_name) : null;
@@ -564,7 +645,7 @@ async function handleApi(req, res, url) {
       accepted: true,
       chat_id: chatId,
       message_id: pendingId,
-      message: "已提交，AI 正在生成回答。",
+      message: t(chatLang, "srv.chat_submitted"),
     });
     (async () => {
       try {
@@ -575,12 +656,13 @@ async function handleApi(req, res, url) {
           .filter((m) => m.status === "completed" && m.content)
           .map((m) => ({ role: m.role, content: m.content }));
         const messages = [
-          { role: "user", content: buildChatSystemSection(chat) },
+          { role: "user", content: buildChatSystemSection(chat, chatLang) },
           ...history,
         ];
         let heartbeats = 0;
         const markdown = await callAiMaybeAgentic(messages, {
           source: chat.mode, // 场景标记：save_memory 写入 ai_memories.source
+          lang: chatLang,
           onHeartbeat: () => {
             heartbeats++;
             console.log(`[AI chat] 仍在生成中...（${heartbeats * 30}s）`);
@@ -602,9 +684,9 @@ async function handleApi(req, res, url) {
   if (req.method === "GET" && url.pathname === "/api/ai/chat") {
     const id = Number(url.searchParams.get("id"));
     if (!Number.isInteger(id) || id <= 0)
-      return sendJson(res, 400, { error: "id 参数无效" });
+      return sendJson(res, 400, { error: t(lang, "srv.id_invalid") });
     const chat = getAiChat(id);
-    if (!chat) return sendJson(res, 404, { error: "对话不存在" });
+    if (!chat) return sendJson(res, 404, { error: t(lang, "srv.chat_not_found") });
     // assistant 完成的回答附 marked 渲染后的 html（口径同报告）
     const messages = chat.messages.map((m) =>
       m.role === "assistant" && m.status === "completed" && m.content
@@ -620,11 +702,11 @@ async function handleApi(req, res, url) {
   if (req.method === "GET" && url.pathname === "/api/ai/chats") {
     const mode = url.searchParams.get("mode");
     if (!/^(follow_up|chat)$/.test(mode ?? ""))
-      return sendJson(res, 400, { error: "mode 参数需为 follow_up/chat" });
+      return sendJson(res, 400, { error: t(lang, "srv.mode_param_invalid") });
     const reportId = Number(url.searchParams.get("report_id"));
     if (url.searchParams.has("report_id")) {
       if (!Number.isInteger(reportId) || reportId <= 0)
-        return sendJson(res, 400, { error: "report_id 参数无效" });
+        return sendJson(res, 400, { error: t(lang, "srv.report_id_invalid") });
       return sendJson(res, 200, { mode, chat_id: findFollowUpChat(reportId) });
     }
     sendJson(res, 200, { mode, chats: listAiChats(mode) });
@@ -635,8 +717,9 @@ async function handleApi(req, res, url) {
   if (req.method === "DELETE" && url.pathname === "/api/ai/chat") {
     const id = Number(url.searchParams.get("id"));
     if (!Number.isInteger(id) || id <= 0)
-      return sendJson(res, 400, { error: "id 参数无效" });
-    if (deleteAiChat(id) === 0) return sendJson(res, 404, { error: "对话不存在" });
+      return sendJson(res, 400, { error: t(lang, "srv.id_invalid") });
+    if (deleteAiChat(id) === 0)
+      return sendJson(res, 404, { error: t(lang, "srv.chat_not_found") });
     sendJson(res, 200, { ok: true });
     return;
   }
@@ -651,8 +734,9 @@ async function handleApi(req, res, url) {
   if (req.method === "DELETE" && url.pathname === "/api/ai/memory") {
     const id = Number(url.searchParams.get("id"));
     if (!Number.isInteger(id) || id <= 0)
-      return sendJson(res, 400, { error: "id 参数无效" });
-    if (deleteMemory(id) === 0) return sendJson(res, 404, { error: "记忆不存在" });
+      return sendJson(res, 400, { error: t(lang, "srv.id_invalid") });
+    if (deleteMemory(id) === 0)
+      return sendJson(res, 404, { error: t(lang, "srv.memory_not_found") });
     sendJson(res, 200, { ok: true });
     return;
   }
@@ -660,7 +744,7 @@ async function handleApi(req, res, url) {
   // GET /api/ftp-estimate  基于最近窗口期骑行（功率峰曲线+心率）科学估算 FTP
   if (req.method === "GET" && url.pathname === "/api/ftp-estimate") {
     const acts = cyclingSummariesSince(FTP_ESTIMATION.window_days);
-    sendJson(res, 200, estimateFtpFromHistory(acts, ATHLETE, FTP_ESTIMATION));
+    sendJson(res, 200, estimateFtpFromHistory(acts, ATHLETE, FTP_ESTIMATION, lang));
     return;
   }
 
@@ -668,9 +752,9 @@ async function handleApi(req, res, url) {
   if (req.method === "POST" && url.pathname === "/api/ftp-apply") {
     let body;
     try {
-      body = JSON.parse((await readBody(req, 1024 * 1024)).toString("utf8"));
+      body = JSON.parse((await readBody(req, 1024 * 1024, lang)).toString("utf8"));
     } catch {
-      return sendJson(res, 400, { error: "请求体需为 JSON" });
+      return sendJson(res, 400, { error: t(lang, "srv.body_json") });
     }
     const ftpW = Number(body?.ftp_w);
     if (
@@ -679,12 +763,15 @@ async function handleApi(req, res, url) {
       ftpW > FTP_ESTIMATION.apply_max_w
     ) {
       return sendJson(res, 400, {
-        error: `ftp_w 需在 ${FTP_ESTIMATION.apply_min_w}–${FTP_ESTIMATION.apply_max_w}W 之间`,
+        error: t(lang, "srv.ftp_range", {
+          lo: FTP_ESTIMATION.apply_min_w,
+          hi: FTP_ESTIMATION.apply_max_w,
+        }),
       });
     }
     const ftpInt = Math.round(ftpW);
     // 写入训练库 settings 表并原地更新 ATHLETE，当前进程立即生效（无需重启）
-    setAthlete({ ftp_watts: ftpInt });
+    setAthlete({ ftp_watts: ftpInt }, lang);
     sendJson(res, 200, { applied: true, ftp_w: ftpInt });
     return;
   }
@@ -693,7 +780,7 @@ async function handleApi(req, res, url) {
   if (req.method === "GET" && url.pathname === "/api/ai/reports") {
     const mode = url.searchParams.get("mode");
     if (!mode || !/^(review|plan|taper|compare)$/.test(mode))
-      return sendJson(res, 400, { error: "mode 参数需为 review/plan/taper/compare" });
+      return sendJson(res, 400, { error: t(lang, "srv.report_mode_invalid") });
     sendJson(res, 200, { mode, reports: listAiReports(mode, 30) });
     return;
   }
@@ -702,21 +789,21 @@ async function handleApi(req, res, url) {
   if (req.method === "GET" && url.pathname === "/api/ai/report") {
     const id = Number(url.searchParams.get("id"));
     if (!Number.isInteger(id) || id <= 0)
-      return sendJson(res, 400, { error: "id 参数无效" });
+      return sendJson(res, 400, { error: t(lang, "srv.id_invalid") });
     const row = getAiReport(id);
-    if (!row) return sendJson(res, 404, { error: "报告不存在" });
+    if (!row) return sendJson(res, 404, { error: t(lang, "srv.report_not_found") });
     if (row.status === "pending") {
       return sendJson(res, 202, {
         ...row,
         html: null,
-        message: "报告正在生成中，请稍后再刷新查看。",
+        message: t(lang, "srv.report_pending"),
       });
     }
     if (row.status === "failed") {
       return sendJson(res, 502, {
         ...row,
         html: null,
-        error: row.error || "AI 分析失败",
+        error: row.error || t(lang, "srv.ai_failed"),
       });
     }
     const html = marked.parse(row.markdown, {

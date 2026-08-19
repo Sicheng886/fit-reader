@@ -24,7 +24,7 @@ process.env.FIT_INPUT_DIR = path.join(tmp, "input");
 const { buildRideFit } = await import("./make_test_fit.mjs");
 const { createServer } = await import("../server.js");
 const { closeDb, saveAiReport, createPendingAiReport, updateAiReport, listAiReports, getAiReport, upsertActivity, getAthleteState, setActivityCategory, getActivitySummary, getAiConfig, migrateAiEnvToDb, createAiChat, addAiChatMessage, updateAiChatMessage, touchAiChat, listAiChats, getAiChat, findFollowUpChat, deleteAiChat, saveMemory, listMemories, listAllMemories, deleteMemory } = await import("../src/db.js");
-const { buildMemorySection } = await import("../src/prompts.js");
+const { buildMemorySection, buildAgenticSection } = await import("../src/prompts.js");
 const { AI_CONFIG } = await import("../src/settings.js");
 
 let server, base;
@@ -156,6 +156,80 @@ test("AI 接口（周期规划）可生成提示词", async () => {
   assert.equal(resp.status, 200);
   const data = await resp.json();
   assert.match(data.prompt, /周期|逐月/);
+});
+
+test("语言机制：/api/lang 存取 + 英文提示词/错误消息/详情本地化", async () => {
+  // 默认 zh（测试不传语言信息）
+  const g0 = await getJson("/api/lang");
+  assert.equal(g0.data.lang, "zh");
+
+  // 保存 en → 未配置密钥的提示词整体变英文（含英文技能文档）
+  const post = await fetch(base + "/api/lang", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ lang: "en" }),
+  });
+  assert.equal(post.status, 200);
+  // 非法值 400
+  const bad = await fetch(base + "/api/lang", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ lang: "fr" }),
+  });
+  assert.equal(bad.status, 400);
+
+  const resp = await fetch(base + "/api/ai", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mode: "review", file_name: "web_test_ride.fit" }),
+  });
+  assert.equal(resp.status, 200);
+  const data = await resp.json();
+  assert.match(data.prompt, /## Metrics & Athlete Parameters/);
+  assert.match(data.prompt, /## Please Answer/);
+  assert.match(data.prompt, /## Knowledge Base/);
+  assert.match(data.prompt, /Coggan Power Training System/);
+  assert.match(data.prompt, /Training data \(single-ride summary\)/);
+
+  // 请求体显式 lang 覆盖库值（zh 覆盖 en）
+  const zhResp = await fetch(base + "/api/ai", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mode: "review", file_name: "web_test_ride.fit", lang: "zh" }),
+  });
+  const zhData = await zhResp.json();
+  assert.match(zhData.prompt, /指标口径/);
+  assert.match(zhData.prompt, /Coggan 功率训练体系/);
+
+  // 英文错误消息（骑手参数非法值）
+  const badAth = await fetch(base + "/api/athlete", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ftp_watts: 9999 }),
+  });
+  assert.equal(badAth.status, 400);
+  assert.match((await badAth.json()).error, /must be between/);
+
+  // 记忆段与工具指引段按语言输出
+  assert.match(buildMemorySection([], "en"), /^## User Memory/);
+  assert.match(buildAgenticSection("en"), /## Data Query & Computation Tools/);
+  assert.match(buildMemorySection([], "zh"), /^## 用户记忆/);
+
+  // 详情接口按 X-Lang 头本地化（form_note 按 form_state 渲染为英文，anomalies 同理）
+  const det = await fetch(`${base}/api/activity?name=${encodeURIComponent("web_test_ride.fit")}`, {
+    headers: { "X-Lang": "en" },
+  });
+  assert.equal(det.status, 200);
+  const detData = await det.json();
+  assert.ok(detData.summary.athlete_context.form_state, "athlete_context 应含 form_state 枚举");
+  assert.doesNotMatch(detData.summary.athlete_context.form_note, /[\u4e00-\u9fa5]/);
+
+  // 恢复 zh，避免影响后续用例（默认语言保持中文）
+  await fetch(base + "/api/lang", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ lang: "zh" }),
+  });
 });
 
 test("AI 接口（已配置密钥 + mock 服务）走 agentic 工具调用完成报告", async () => {
