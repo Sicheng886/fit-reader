@@ -20,7 +20,11 @@ import {
   collectDeveloperFields,
 } from "../index.js";
 import { estimateFtpFromHistory } from "../src/ftp.js";
-import { compactSummaryForPrompt } from "../src/prompts.js";
+import {
+  compactSummaryForPrompt,
+  buildDateSection,
+  buildReviewPrompt,
+} from "../src/prompts.js";
 import { simulateForm, generateWorkout } from "../src/planning.js";
 import { ATHLETE, FORM_SIMULATION, WORKOUT_TEMPLATES } from "../src/settings.js";
 
@@ -330,6 +334,41 @@ test("compactSummaryForPrompt: 不修改原对象", () => {
   };
   compactSummaryForPrompt(s);
   assert.equal(s.anomalies.length, 8);
+});
+
+// ---------------- prompts.js 当前日期时间段 ----------------
+
+// 2026-09-03 恒为星期四；本地时间构造器保证日期/星期/时刻在任何时区下都固定
+const FIXED_NOW = new Date(2026, 8, 3, 14, 35);
+
+test("buildDateSection: zh 输出日期/星期/时刻/时区偏移与 UTC 说明", () => {
+  const s = buildDateSection(FIXED_NOW, "zh");
+  assert.match(s, /^## 当前时间/);
+  assert.match(s, /今天是 2026-09-03（星期四），当前时刻 14:35（UTC[+-]\d{2}:\d{2}）。/);
+  assert.match(s, /UTC 口径/);
+});
+
+test("buildDateSection: en 输出英文标题与英文星期", () => {
+  const s = buildDateSection(FIXED_NOW, "en");
+  assert.match(s, /^## Current Date & Time/);
+  assert.match(s, /Today is Thursday, 2026-09-03; local time 14:35 \(UTC[+-]\d{2}:\d{2}\)\./);
+  assert.match(s, /UTC-based/);
+});
+
+test("buildDateSection: 非法或缺失时刻返回 null（不产生该段）", () => {
+  assert.equal(buildDateSection(new Date("not-a-date"), "zh"), null);
+  assert.equal(buildDateSection(null, "zh"), null);
+});
+
+test("buildReviewPrompt: 经 assemble 自动带上当前时间段，位于口径之后数据之前", () => {
+  const summary = { activity: { date: "2026-09-06", category: "training" } };
+  const zh = buildReviewPrompt(summary, undefined, undefined, "zh", FIXED_NOW);
+  assert.match(zh, /## 当前时间/);
+  assert.match(zh, /星期四/);
+  assert.ok(zh.indexOf("## 当前时间") < zh.indexOf("## 训练数据"), "日期段应在数据段之前");
+  const en = buildReviewPrompt(summary, undefined, undefined, "en", FIXED_NOW);
+  assert.match(en, /## Current Date & Time/);
+  assert.match(en, /Thursday/);
 });
 
 // ============ src/planning.js：未来负荷推演 + 课表生成 ============

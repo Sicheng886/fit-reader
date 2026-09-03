@@ -85,6 +85,7 @@ import {
   buildComparePrompt,
   buildAgenticSection,
   buildChatInstruction,
+  buildDateSection,
   buildMemorySection,
   buildMetricGlossary,
   buildProfileSection,
@@ -274,16 +275,20 @@ function buildPromptForMode(body, lang = "zh") {
 
 /**
  * 拼装对话系统段（每轮后台生成时按当前状态重新生成，历史消息只带正文）：
- * - follow_up：快答指令 + 关联报告正文 + 关联训练压缩数据 + 工具指引 + 用户记忆段；
- * - chat：教练角色 + 指标口径 + 专业知识库 + 用户背景 + 对话指令 + 工具指引 + 用户记忆段。
+ * - follow_up：快答指令 + 当前时间 + 关联报告正文 + 关联训练压缩数据 + 工具指引 + 用户记忆段；
+ * - chat：教练角色 + 指标口径 + 当前时间 + 专业知识库 + 用户背景 + 对话指令 + 工具指引 + 用户记忆段。
  * 记忆段只在 agentic 模式注入——其中的 save_memory 指引依赖工具调用能力。
  * 专业知识库段（src/skills.js）只注入 chat 与四场景报告；follow_up 快答场景不注入。
+ * 当前时间段（buildDateSection）每轮重建，AI 对「今天/星期几」的感知始终最新。
  * lang 为提交时的请求语言（zh/en，缺省 zh）。
  */
 function buildChatSystemSection(chat, lang = "zh") {
   const agentic = AI_CONFIG.agentic !== false;
   if (chat.mode === "follow_up") {
     let s = buildChatInstruction("follow_up", lang);
+    // 当前时间：追问常涉及「今天感觉如何/接下来怎么练」，先锚定日期基准
+    const nowSection = buildDateSection(new Date(), lang);
+    if (nowSection) s += `\n\n${nowSection}`;
     // 报告正文：追问以报告内容为锚（报告可能已被滚动清理，缺则仅靠训练数据）
     if (chat.report_id != null) {
       const rep = getAiReport(chat.report_id);
@@ -308,6 +313,7 @@ function buildChatSystemSection(chat, lang = "zh") {
   const parts = [
     lang === "en" ? ROLE_EN : ROLE,
     buildMetricGlossary(lang),
+    buildDateSection(new Date(), lang),
     buildSkillsSection(lang),
     buildProfileSection(getProfile(), lang),
     buildChatInstruction("chat", lang),

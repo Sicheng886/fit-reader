@@ -60,6 +60,7 @@ Full build instructions (local builds, version tags, persistent volumes, permiss
 - Node.js (ESM, zero build, zero transpilation)
 - `fit-file-parser`: parses `.fit` files
 - `marked`: renders AI report Markdown to HTML
+- `dayjs`: current date/weekday/timezone formatting for AI prompts
 - Node built-in `node:sqlite`: local training library
 
 ## Development Conventions

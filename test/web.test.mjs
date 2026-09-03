@@ -777,10 +777,11 @@ test("AI 直接对话（mock 服务）：202 → 轮询取回答，系统段与�
     assert.match(chat.messages[1].content, /二区恢复骑/);
     assert.ok(chat.messages[1].html, "assistant completed 消息应附 marked html");
 
-    // mock 侧：系统段 = 角色 + 指标口径 + 对话指令 + 工具指引；历史只带 user 正文
+    // mock 侧：系统段 = 角色 + 指标口径 + 当前时间 + 对话指令 + 工具指引；历史只带 user 正文
     const msgs = seenBodies[0].messages;
     assert.match(msgs[0].content, /自行车教练/);
     assert.match(msgs[0].content, /指标口径/);
+    assert.match(msgs[0].content, /## 当前时间/);
     assert.match(msgs[0].content, /数据查询与计算工具/);
     assert.equal(msgs.at(-1).role, "user");
     assert.equal(msgs.at(-1).content, "今天该怎么练？");
@@ -869,10 +870,11 @@ test("AI 追问（mock 服务）：报告正文 + 压缩训练数据进入提示
     assert.ok(chat, "追问应在 5 秒内完成");
     assert.match(chat.messages[1].content, /漂移 3%/);
 
-    // mock 侧系统段：≤200 字快答指令 + 工具查询不计字数 + 报告正文 + 压缩训练数据
+    // mock 侧系统段：≤200 字快答指令 + 工具查询不计字数 + 当前时间 + 报告正文 + 压缩训练数据
     const sys = seenBodies[0].messages[0].content;
     assert.match(sys, /200 字以内/);
     assert.match(sys, /工具查询/);
+    assert.match(sys, /## 当前时间/);
     assert.match(sys, /复盘报告正文/);
     assert.match(sys, /本次训练数据/);
   } finally {

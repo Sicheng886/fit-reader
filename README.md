@@ -60,6 +60,7 @@ docker run -d \
 - Node.js（ESM，零构建、零转译）
 - `fit-file-parser`：解析 `.fit` 文件
 - `marked`：AI 报告 Markdown 转 HTML
+- `dayjs`：AI 提示词当前日期/星期/时区格式化
 - Node 内置 `node:sqlite`：本地训练库
 
 ## 开发约定

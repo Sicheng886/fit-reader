@@ -71,7 +71,7 @@ test("每次调用实时扫描：新增文件立即生效", () => {
   assert.equal(loadSkills().length, 2);
 });
 
-test("内置 skills/ 目录默认加载四个技能且跳过 _README", () => {
+test("内置 skills/ 目录默认加载五个技能且跳过 _README", () => {
   delete process.env.FIT_SKILLS_DIR; // 用仓库默认目录
   const titles = loadSkills().map((s) => s.title);
   assert.deepEqual(titles, [
@@ -79,6 +79,7 @@ test("内置 skills/ 目录默认加载四个技能且跳过 _README", () => {
     "TrainingPeaks 负荷模型（CTL / ATL / TSB）",
     "心率区间与心率解读体系",
     "训练报告撰写规范",
+    "周计划节奏（按星期几安排训练）",
   ]);
 });
 
@@ -104,7 +105,7 @@ test("buildSkillsSection 按语言输出专业知识库段（en 为 Knowledge Ba
   assert.equal(buildSkillsSection("zh"), null);
 });
 
-test("内置 skills/ 目录英文技能冒烟：四个 .en.md 按语言加载", () => {
+test("内置 skills/ 目录英文技能冒烟：五个 .en.md 按语言加载", () => {
   delete process.env.FIT_SKILLS_DIR; // 用仓库默认目录
   const titles = loadSkills("en").map((s) => s.title);
   assert.deepEqual(titles, [
@@ -112,6 +113,7 @@ test("内置 skills/ 目录英文技能冒烟：四个 .en.md 按语言加载", 
     "TrainingPeaks Load Model (CTL / ATL / TSB)",
     "Heart Rate Zones and HR Interpretation",
     "Training Report Writing Standards",
+    "Weekly Planning Rhythm (Scheduling by Day of Week)",
   ]);
   assert.match(buildSkillsSection("en"), /^## Knowledge Base/);
 });

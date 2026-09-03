@@ -1,6 +1,6 @@
 {
   "name": "fit-reader",
-  "version": "1.7.1",
+  "version": "1.8.0",
   "description": "",
   "type": "module",
   "main": "index.js",
@@ -12,6 +12,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "dayjs": "^1.11.23",
     "fit-file-parser": "^3.0.2",
     "marked": "^18.0.6"
   }

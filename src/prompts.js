@@ -8,8 +8,12 @@
  * profile/备注/记忆原文）为语言中立，原样透传——用户自填内容不翻译。
  *
  * 指标口径说明由 settings.js 动态生成，改骑手参数/分区后提示词自动同步。
- * 本模块全是纯函数，无状态、无 IO。
+ * 本模块除「当前时间」段取 now 参数外均为纯函数、无状态、无 IO；
+ * 各场景 builder 的 now 缺省为当前时刻（本地时区），可注入固定值便于测试。
  */
+
+import dayjs from "dayjs";
+import "dayjs/locale/zh-cn.js";
 
 import { ATHLETE, POWER_ZONES, HR_ZONES } from "./settings.js";
 
@@ -34,6 +38,10 @@ const TEXT = {
     "glossary.power_zone_line": `  - {name}: {min}–{max} FTP`,
     "glossary.hr_zones": `心率分区（%最大心率）：`,
     "glossary.hr_zone_line": `  - {name}: {min}–{max} 最大心率`,
+
+    "sec.now": `## 当前时间`,
+    "sec.now.line": `今天是 {date}（{weekday}），当前时刻 {time}（UTC{offset}）。`,
+    "sec.now.utc_note": `训练库中的训练日期为 UTC 口径，可能与本地日历相差一天；涉及「今天/本周/下周」等表述时，以本段日期为准。`,
 
     "agentic.head": `## 数据查询与计算工具`,
     "agentic.rules_head": `使用规则：`,
@@ -145,6 +153,10 @@ You are a rigorous, pragmatic cycling coach, well-versed in the Coggan power tra
     "glossary.power_zone_line": `  - {name}: {min}–{max} FTP`,
     "glossary.hr_zones": `Heart rate zones (%HRmax):`,
     "glossary.hr_zone_line": `  - {name}: {min}–{max} HRmax`,
+
+    "sec.now": `## Current Date & Time`,
+    "sec.now.line": `Today is {weekday}, {date}; local time {time} (UTC{offset}).`,
+    "sec.now.utc_note": `Activity dates in the training library are UTC-based and may differ from the local calendar by one day; treat the date above as the baseline for "today / this week / next week".`,
 
     "agentic.head": `## Data Query & Computation Tools`,
     "agentic.rules_head": `Rules:`,
@@ -286,6 +298,30 @@ export const ROLE = TEXT.zh.role;
 /** 英文角色（chat 直接对话系统段按语言选用；四场景模板由 assemble 内部处理） */
 export const ROLE_EN = TEXT.en.role;
 
+/**
+ * 当前日期时间段：让 AI 知道「今天几号、星期几、几点、什么时区」，
+ * 用于周计划节奏、「今天还练不练」、赛前倒计时等时间判断。
+ * 日期按服务器本地时区渲染（本地部署即用户时区），星期名经 dayjs locale
+ * 随语言切换（zh-cn → 星期四 / en → Thursday）；训练库日期为 UTC 口径，
+ * 段内文案已注明差异。now 非法时返回 null（不产生该段）。
+ */
+export function buildDateSection(now, lang = "zh") {
+  if (now == null) return null;
+  const d = dayjs(now).locale(lang === "en" ? "en" : "zh-cn");
+  if (!d.isValid()) return null;
+  return [
+    TT(lang, "sec.now"),
+    "",
+    TT(lang, "sec.now.line", {
+      date: d.format("YYYY-MM-DD"),
+      weekday: d.format("dddd"),
+      time: d.format("HH:mm"),
+      offset: d.format("Z"),
+    }),
+    TT(lang, "sec.now.utc_note"),
+  ].join("\n");
+}
+
 function jsonBlock(obj) {
   return "```json\n" + JSON.stringify(obj, null, 2) + "\n```";
 }
@@ -357,15 +393,16 @@ ${[0, 1, 2, 3].map((i) => TT(lang, `mem.rule.${i}`)).join("\n")}`;
 }
 
 /**
- * 统一拼装：角色 + 口径 + 专业知识库（可选）+ 用户背景（可选）+ 各数据段 + 问题清单。
+ * 统一拼装：角色 + 口径 + 当前时间 + 专业知识库（可选）+ 用户背景（可选）+ 各数据段 + 问题清单。
  * skills 为 src/skills.js buildSkillsSection() 的输出，仅服务端 AI 调用注入
- * （CLI 提示词命令不传，保持原样）。
+ * （CLI 提示词命令不传，保持原样）；
+ * now 为当前时刻（buildDateSection 用，非法时该段省略）。
  */
-function assemble(dataSections, questions, profile, skills, lang) {
+function assemble(dataSections, questions, profile, skills, lang, now) {
   return [
     lang === "en" ? TEXT.en.role : ROLE,
     buildMetricGlossary(lang),
-    ...[skills, buildProfileSection(profile, lang), ...dataSections].filter(Boolean),
+    ...[buildDateSection(now, lang), skills, buildProfileSection(profile, lang), ...dataSections].filter(Boolean),
     `${TT(lang, "answer.head")}\n\n${questions.map((q, i) => `${i + 1}. ${q}`).join("\n")}`,
   ].join("\n\n");
 }
@@ -474,9 +511,10 @@ function categoryName(cat, lang) {
  * 若 summary.activity.note 存在（用户在详情页填写的体感/路况备注），提示 AI 纳入考量；
  * profile 为用户背景与训练目标（可选，来自训练库 settings 表）；
  * skills 为专业知识库段（可选，仅服务端注入，见 src/skills.js）；
- * lang 为提示词语言（zh/en，默认 zh）。
+ * lang 为提示词语言（zh/en，默认 zh）；
+ * now 为当前时刻（可注入固定值便于测试，缺省当前时间）。
  */
-export function buildReviewPrompt(summary, profile, skills, lang = "zh") {
+export function buildReviewPrompt(summary, profile, skills, lang = "zh", now = new Date()) {
   const catName = categoryName(summary?.activity?.category, lang);
   const note = String(summary?.activity?.note ?? "").trim();
   return assemble(
@@ -498,6 +536,7 @@ export function buildReviewPrompt(summary, profile, skills, lang = "zh") {
     profile,
     skills,
     lang,
+    now,
   );
 }
 
@@ -507,8 +546,15 @@ export function buildReviewPrompt(summary, profile, skills, lang = "zh") {
  * @param {object} [profile] 用户背景与训练目标（可选）
  * @param {string} [skills] 专业知识库段（可选，仅服务端注入）
  * @param {string} [lang] 提示词语言（zh/en，默认 zh）
+ * @param {Date} [now] 当前时刻（可注入固定值便于测试，缺省当前时间）
  */
-export function buildPlanPrompt({ months, formSeries, recentActivities }, profile, skills, lang = "zh") {
+export function buildPlanPrompt(
+  { months, formSeries, recentActivities },
+  profile,
+  skills,
+  lang = "zh",
+  now = new Date(),
+) {
   return assemble(
     [
       `${TT(lang, "sec.plan.monthly")}\n\n${jsonBlock(months)}`,
@@ -519,6 +565,7 @@ export function buildPlanPrompt({ months, formSeries, recentActivities }, profil
     profile,
     skills,
     lang,
+    now,
   );
 }
 
@@ -528,12 +575,14 @@ export function buildPlanPrompt({ months, formSeries, recentActivities }, profil
  * @param {object} [profile] 用户背景与训练目标（可选）
  * @param {string} [skills] 专业知识库段（可选，仅服务端注入）
  * @param {string} [lang] 提示词语言（zh/en，默认 zh）
+ * @param {Date} [now] 当前时刻（可注入固定值便于测试，缺省当前时间）
  */
 export function buildTaperPrompt(
   { raceDate, daysLeft, form, formSeries, recentActivities },
   profile,
   skills,
   lang = "zh",
+  now = new Date(),
 ) {
   return assemble(
     [
@@ -546,6 +595,7 @@ export function buildTaperPrompt(
     profile,
     skills,
     lang,
+    now,
   );
 }
 
@@ -553,9 +603,10 @@ export function buildTaperPrompt(
  * 两次训练对比：传入两个 summary.json 对象。
  * profile 为用户背景与训练目标（可选，来自训练库 settings 表）；
  * skills 为专业知识库段（可选，仅服务端注入）；
- * lang 为提示词语言（zh/en，默认 zh）。
+ * lang 为提示词语言（zh/en，默认 zh）；
+ * now 为当前时刻（可注入固定值便于测试，缺省当前时间）。
  */
-export function buildComparePrompt(summaryA, summaryB, profile, skills, lang = "zh") {
+export function buildComparePrompt(summaryA, summaryB, profile, skills, lang = "zh", now = new Date()) {
   const dateA = summaryA.activity?.date ?? "未知日期";
   const dateB = summaryB.activity?.date ?? "未知日期";
   return assemble(
@@ -567,6 +618,7 @@ export function buildComparePrompt(summaryA, summaryB, profile, skills, lang = "
     profile,
     skills,
     lang,
+    now,
   );
 }
 
