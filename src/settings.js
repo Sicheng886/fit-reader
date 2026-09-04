@@ -118,9 +118,17 @@ export const CLIMB_DETECTION = {
   smooth_sec: 30, // 坡度计算窗口（秒），用于压海拔噪声
 };
 
+// ============ 累计爬升阈值（index.js：elevationGain 滞回去抖） ============
+export const ELEVATION = {
+  noise_threshold_m: 1, // 爬升去抖阈值：以最近确认点为基线，累计上升达到该值才计入爬升（压制气压计亚米级抖动）
+};
+
 // ============ 数据质量阈值 ============
 export const DATA_QUALITY = {
   record_gap_sec: 10, // 逐秒网格中连续缺失超过该时长，在 anomalies 中标注（损坏文件被跳过的记录会表现为这种缺口）
+  pause_dist_jump_m: 10, // 距离冻结判定（米）：间隙两侧设备累计距离跳变不超过该值视为"设备未计时"→ 判为暂停（骑行中掉数据距离会按速度继续跳变）
+  pause_resume_speed_kmh: 2, // 记录恢复后仍低于该速度视为"静止恢复"→ 判为计时暂停（无距离数据的文件的兜底判据）
+  pause_resume_window_sec: 5, // 静止判定窗口（秒）：取恢复记录后该窗口内的最大速度判断
 };
 
 // ============ 功率峰曲线缺口容忍（index.js：fillShortGaps 插值后再算峰功率/FTP 估算） ============

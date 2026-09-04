@@ -46,6 +46,7 @@ const DICT = {
     // ---- 异常标注（index.js 结构化 anomalies → formatAnomaly 渲染） ----
     "anom.power_gap": "功率缺失 {duration}s，起始 {at}",
     "anom.record_gap": "记录缺失 {duration}s，起始 {at}",
+    "anom.timer_pause": "计时暂停 {duration}s，起始 {at}",
     "anom.hr_jump": "心率跳变 {from}→{to}，位于 {at}",
     "anom.other": "{text}",
 
@@ -160,6 +161,7 @@ const DICT = {
 
     "anom.power_gap": "Power missing {duration}s, starting {at}",
     "anom.record_gap": "Record missing {duration}s, starting {at}",
+    "anom.timer_pause": "Timer paused {duration}s, starting {at}",
     "anom.hr_jump": "Heart rate jump {from}→{to} at {at}",
     "anom.other": "{text}",
 
@@ -269,7 +271,7 @@ export function formNote(tsb, lang) {
 
 /**
  * 结构化异常标注 → 展示文本。
- * 新格式：{ type: "power_gap"|"record_gap"|"hr_jump", duration_sec?, from?, to?, at }
+ * 新格式：{ type: "power_gap"|"record_gap"|"timer_pause"|"hr_jump", duration_sec?, from?, to?, at }
  * 旧数据（字符串 anomalies）原样透传，不做翻译。
  */
 export function formatAnomaly(a, lang) {
@@ -280,6 +282,8 @@ export function formatAnomaly(a, lang) {
       return t(lang, "anom.power_gap", { duration: a.duration_sec, at: a.at });
     case "record_gap":
       return t(lang, "anom.record_gap", { duration: a.duration_sec, at: a.at });
+    case "timer_pause":
+      return t(lang, "anom.timer_pause", { duration: a.duration_sec, at: a.at });
     case "hr_jump":
       return t(lang, "anom.hr_jump", { from: a.from, to: a.to, at: a.at });
     default:

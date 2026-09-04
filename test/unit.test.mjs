@@ -14,6 +14,7 @@ import {
   elevationGain,
   findPowerGaps,
   findMissingSpans,
+  detectPauseSpans,
   estimateFtp,
   detectIntervals,
   hrDriftPct,
@@ -106,6 +107,72 @@ test("elevationGain: 1m 阈值去抖，小抖动不计爬升", () => {
   assert.equal(elevationGain([0, 0.3, 0, 0.3, 0]), 0); // 抖动被压掉
   // 100→110 计 10m，下降到 105 后 105→120 再计 15m，合计 25m
   assert.equal(elevationGain([null, 100, 110, 105, 120]), 25);
+});
+
+test("elevationGain: 滞回去抖按相邻增量累计，连续小步爬升不双计数", () => {
+  // 5 步 × 0.2m = 1.0m 爬升：旧算法相对陈旧基线重复累计会虚报到 2.0m
+  assert.equal(elevationGain([0, 0.2, 0.4, 0.6, 0.8, 1.0]), 1);
+  // 长缓坡 50 步 × 0.2m = 10m：每满 1m 确认一次，合计恰为 10m
+  const ramp = Array.from({ length: 51 }, (_, i) => 100 + i * 0.2);
+  assert.equal(elevationGain(ramp), 10);
+  // 平地上亚米级噪声（±0.2m 反复 600 秒）不产生爬升
+  const flat = Array.from({ length: 600 }, (_, i) => (i % 2 ? 0.2 : -0.2));
+  assert.equal(elevationGain(flat), 0);
+});
+
+test("detectPauseSpans: 静止恢复的间隙判为暂停，骑行中恢复仍为数据缺失", () => {
+  // 200s：50-80s 全空（恢复后静止）→ 暂停；120-140s 全空（恢复时已在移动）→ 非暂停
+  const records = [];
+  for (let i = 0; i < 200; i++) {
+    const empty = (i >= 50 && i < 80) || (i >= 120 && i < 140);
+    records.push(
+      rec(
+        i,
+        empty
+          ? {}
+          : { power: 200, heart_rate: 120, speed: i >= 80 && i < 140 ? 0 : 6 },
+      ),
+    );
+  }
+  const spans = detectPauseSpans(records, []);
+  assert.equal(spans.length, 1);
+  assert.equal(spans[0].duration_sec, 30);
+  assert.equal(spans[0].start, records[50].timestamp);
+});
+
+test("detectPauseSpans: 距离冻结判为暂停（恢复即起步），距离跳变仍为数据缺失", () => {
+  // 30-60s 全空且恢复后立即起步（速度 8），但设备累计距离在两侧几乎不动 → 暂停；
+  // 90-100s 全空且距离按骑行速度跳变 80m → 数据缺失
+  const records = [];
+  for (let i = 0; i < 120; i++) {
+    if ((i >= 30 && i < 60) || (i >= 90 && i < 100)) {
+      records.push(rec(i));
+      continue;
+    }
+    const dist = i < 30 ? i * 8 : i < 90 ? 240 + (i - 60) * 2 : 378 + (i - 100) * 8;
+    records.push(rec(i, { power: 200, heart_rate: 120, speed: 8, distance: dist }));
+  }
+  const spans = detectPauseSpans(records, []);
+  assert.equal(spans.length, 1);
+  assert.equal(spans[0].start, records[30].timestamp);
+  assert.equal(spans[0].duration_sec, 30);
+});
+
+test("detectPauseSpans: FIT timer 事件 stop_all→start 区间判为暂停", () => {
+  // 100s 记录，30-60s 全空且恢复时已在移动；但事件表明 28s 停表、62s 恢复计时
+  const t0 = 1700000000000;
+  const records = Array.from({ length: 100 }, (_, i) =>
+    rec(i, i >= 30 && i < 60 ? {} : { power: 200, heart_rate: 120, speed: 6 }),
+  );
+  const events = [
+    { event: "timer", event_type: "stop_all", timestamp: new Date(t0 + 28000) },
+    { event: "timer", event_type: "start", timestamp: new Date(t0 + 62000) },
+  ];
+  const spans = detectPauseSpans(records, events);
+  assert.equal(spans.length, 1);
+  assert.equal(spans[0].duration_sec, 30);
+  // 无事件时同一段恢复侧在移动 → 不判暂停
+  assert.equal(detectPauseSpans(records, []).length, 0);
 });
 
 test("findPowerGaps: 只报告连续缺失超过阈值的片段", () => {

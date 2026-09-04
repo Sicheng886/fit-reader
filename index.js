@@ -41,6 +41,7 @@ import {
   CLIMB_DETECTION,
   CADENCE_ANALYSIS,
   DATA_QUALITY,
+  ELEVATION,
   PEAK_CURVE,
 } from "./src/settings.js";
 import { normalizeLang } from "./src/i18n.js";
@@ -187,6 +188,81 @@ export function findMissingSpans(records, minSec) {
   return spans;
 }
 
+/**
+ * 暂停识别：从逐秒网格中找出"计时暂停"片段。码表暂停计时（手动或自动暂停）期间
+ * 不写记录，网格上表现为整段空缺，不应被标为数据缺失。判定优先级：
+ * 1. 事件法：FIT event 消息 timer 的 stop_all→start 时间对（规范设备会写暂停事件），
+ *    与空缺段相交即判为暂停；
+ * 2. 距离冻结：设备累计距离在空缺两侧几乎不前进（暂停时设备不累计距离；骑行中
+ *    掉数据则距离会按速度继续跳变）——设备自身口径的"未计时"证据；
+ * 3. 静止恢复：恢复记录后 resumeWindowSec 秒内最大速度仍低于 resumeSpeedKmh
+ *    （无距离数据的文件用此兜底；骑行中掉数据恢复时人已在移动）。
+ * records 为重采样后的逐秒网格（timestamp 为 ISO 字符串），events 为解析出的
+ * FIT event 消息数组；opts 可注入阈值与已算好的空缺段（gaps）。返回空缺段子集：
+ * [{ start, duration_sec }]。
+ */
+export function detectPauseSpans(records, events = [], opts = {}) {
+  if (!records.length) return [];
+  const minSec = opts.minSec ?? DATA_QUALITY.record_gap_sec;
+  const distJumpM = opts.distJumpM ?? DATA_QUALITY.pause_dist_jump_m;
+  const resumeSpeedKmh =
+    opts.resumeSpeedKmh ?? DATA_QUALITY.pause_resume_speed_kmh;
+  const resumeWindowSec =
+    opts.resumeWindowSec ?? DATA_QUALITY.pause_resume_window_sec;
+  const gaps = opts.gaps ?? findMissingSpans(records, minSec);
+  if (!gaps.length) return [];
+
+  const t0Ms = new Date(records[0].timestamp).getTime();
+
+  // 事件法：收集 timer stop_all→start 的绝对时间对
+  const eventSpans = [];
+  let stopMs = null;
+  for (const e of events || []) {
+    if (e?.event !== "timer" || e.timestamp == null) continue;
+    const ts = new Date(e.timestamp).getTime();
+    if (e.event_type === "stop_all") {
+      if (stopMs == null) stopMs = ts;
+    } else if (e.event_type === "start" && stopMs != null) {
+      eventSpans.push([stopMs, ts]);
+      stopMs = null;
+    }
+  }
+
+  const pauses = [];
+  for (const g of gaps) {
+    const startIdx = Math.round((new Date(g.start).getTime() - t0Ms) / 1000);
+    const endIdx = startIdx + g.duration_sec; // 恢复记录所在下标
+    const gStartMs = startIdx * 1000 + t0Ms;
+    const gEndMs = endIdx * 1000 + t0Ms;
+    // 事件区间与该空缺相交 → 暂停
+    if (eventSpans.some(([a, b]) => b > gStartMs && a < gEndMs)) {
+      pauses.push(g);
+      continue;
+    }
+    // 距离冻结：设备累计距离在空缺两侧几乎不前进 → 设备未计时 → 暂停
+    const distBefore = startIdx > 0 ? records[startIdx - 1].distance : null;
+    const distAfter = records[endIdx]?.distance ?? null;
+    if (distBefore != null && distAfter != null) {
+      if (distAfter - distBefore <= distJumpM) {
+        pauses.push(g);
+        continue;
+      }
+    }
+    // 静止恢复：恢复后窗口内最大速度低于阈值 → 暂停
+    let maxSpeed = null;
+    for (
+      let i = endIdx;
+      i < Math.min(endIdx + resumeWindowSec, records.length);
+      i++
+    ) {
+      const v = records[i]?.speed;
+      if (v != null && (maxSpeed == null || v > maxSpeed)) maxSpeed = v;
+    }
+    if (maxSpeed != null && maxSpeed < resumeSpeedKmh) pauses.push(g);
+  }
+  return pauses;
+}
+
 /** FIT record 中的标准字段（白名单），之外的数值字段视为开发者字段 */
 const STANDARD_RECORD_FIELDS = new Set([
   "timestamp",
@@ -264,28 +340,30 @@ export function findPowerGaps(records, gapSec = 60) {
   return gaps;
 }
 
-/** 累计爬升（带 1m 阈值去抖） */
-export function elevationGain(alts) {
+/**
+ * 累计爬升（滞回去抖）：以最近一次"确认点"为基线，逐样本累计相邻上升量，
+ * 累计上升达到 threshold_m 才计入爬升并把基线抬到当前高点；期间海拔跌破基线
+ * 则基线下跟新低——只有真正超出噪声门限的抬升才被累计，亚米级气压抖动不计数。
+ * null 缺口跳过，基线保持不变。
+ */
+export function elevationGain(alts, thresholdM = ELEVATION.noise_threshold_m) {
   let gain = 0,
-    last = null,
-    pending = 0;
+    base = null,
+    peak = null;
   for (const a of alts) {
     if (a == null) continue;
-    if (last == null) {
-      last = a;
+    if (base == null) {
+      base = a;
+      peak = a;
       continue;
     }
-    const d = a - last;
-    if (d > 0) {
-      pending += d;
-      if (pending >= 1) {
-        gain += pending;
-        last = a;
-        pending = 0;
-      }
-    } else {
-      last = a;
-      pending = 0;
+    if (a > peak) peak = a;
+    if (peak - base >= thresholdM) {
+      gain += peak - base;
+      base = peak;
+    } else if (a < base) {
+      base = a;
+      peak = a;
     }
   }
   return Math.round(gain);
@@ -554,13 +632,15 @@ export async function analyzeFile(input, outDir) {
   const records = [];
   for (let t = t0; t <= t1; t++) {
     const r = bySec.get(t);
+    // 解析器按 lengthUnit 把海拔缩放成了 km，这里换回米（保留 1 位小数）；
+    // 部分设备只写 enhanced_altitude（32 位增强海拔），缺失时回退
+    const altKm = r?.altitude ?? r?.enhanced_altitude;
     records.push({
       timestamp: new Date(t * 1000).toISOString(),
       power: r?.power ?? null,
       heart_rate: r?.heart_rate ?? null,
       cadence: r?.cadence ?? null,
-      // 解析器按 lengthUnit 把海拔缩放成了 km，这里换回米（保留 1 位小数）
-      altitude: r?.altitude != null ? Math.round(r.altitude * 10000) / 10 : null,
+      altitude: altKm != null ? Math.round(altKm * 10000) / 10 : null,
       speed: r?.speed != null ? Math.round(r.speed * 100) / 100 : null,
       distance: r?.distance != null ? Math.round(r.distance * 1000) : null, // 米
       temperature: r?.temperature ?? null, // ℃
@@ -588,6 +668,19 @@ export async function analyzeFile(input, outDir) {
   );
   fs.writeFileSync(csvPath, header + lines.join("\n"));
 
+  // ---- 2.5 暂停识别与缺失统计 ----
+  // 码表暂停计时期间不写记录，网格上表现为整段空缺；重新开始计时时骑手通常
+  // 已静止，据此把这类空缺判为"计时暂停"而非"数据缺失"，阈值见 DATA_QUALITY
+  const missingSpans = findMissingSpans(records, DATA_QUALITY.record_gap_sec);
+  const pauseSpans = detectPauseSpans(records, data.events || [], {
+    gaps: missingSpans,
+  });
+  const pauseStarts = new Set(pauseSpans.map((s) => s.start));
+  const pauseSeconds = pauseSpans.reduce((a, s) => a + s.duration_sec, 0);
+  // 时间跨度内没有任何数据的秒数（扣除暂停；损坏文件被 force 模式跳过的记录同样表现为缺口）
+  const expectedSec = t1 - t0 + 1;
+  const missingSec = expectedSec - bySec.size - pauseSeconds;
+
   // ---- 3. 计算指标 ----
   const powers = records.map((r) => r.power);
   const hrs = records.map((r) => r.heart_rate);
@@ -607,7 +700,8 @@ export async function analyzeFile(input, outDir) {
 
   const avgPower = avg(powers);
   const np = normalizedPower(powers);
-  const durationSec = records.length;
+  // 骑行时长 = 网格秒数 − 暂停秒数（暂停期间码表未计时，不计入时长/TSS/平均速度）
+  const durationSec = records.length - pauseSeconds;
   const ifactor =
     np && ATHLETE.ftp_watts
       ? Math.round((np / ATHLETE.ftp_watts) * 100) / 100
@@ -659,11 +753,6 @@ export async function analyzeFile(input, outDir) {
       }
     : undefined;
 
-  // 记录层面的缺失统计：时间跨度内没有任何数据的秒数
-  // （损坏文件被 force 模式跳过的记录会表现为这种缺口）
-  const expectedSec = t1 - t0 + 1;
-  const missingSec = expectedSec - bySec.size;
-
   // 功率峰曲线：短缺口先线性插值补齐再取峰（容忍功率计偶发掉秒，长缺口仍要求连续）
   const powersFilled = fillShortGaps(powers, PEAK_CURVE.max_interp_gap_sec);
   const peakCurve = {};
@@ -677,14 +766,27 @@ export async function analyzeFile(input, outDir) {
     if (p != null) peakCurve[label] = p;
   }
 
-  // 功率缺失片段 → 异常标注（结构化：type 语言中立，展示时按语言格式化）
+  // 功率缺失片段 → 异常标注（结构化：type 语言中立，展示时按语言格式化）；
+  // 与暂停区间重叠的功率缺失是停表所致，不算异常
   const anomalies = [];
+  const overlapsPause = (startIso, durSec) => {
+    const s = new Date(startIso).getTime();
+    const e = s + durSec * 1000;
+    return pauseSpans.some((p) => {
+      const ps = new Date(p.start).getTime();
+      return e > ps && s < ps + p.duration_sec * 1000;
+    });
+  };
   for (const g of findPowerGaps(records)) {
+    if (overlapsPause(g.start, g.duration_sec)) continue;
     anomalies.push({ type: "power_gap", duration_sec: g.duration_sec, at: g.start });
   }
-  // 整段记录缺失检测（损坏文件兜底标注）
-  for (const g of findMissingSpans(records, DATA_QUALITY.record_gap_sec)) {
-    anomalies.push({ type: "record_gap", duration_sec: g.duration_sec, at: g.start });
+  // 整段记录缺失检测：静止恢复的空缺是计时暂停，其余为数据缺失（损坏文件兜底标注）
+  for (const g of missingSpans) {
+    if (pauseStarts.has(g.start))
+      anomalies.push({ type: "timer_pause", duration_sec: g.duration_sec, at: g.start });
+    else
+      anomalies.push({ type: "record_gap", duration_sec: g.duration_sec, at: g.start });
   }
   // 心率跳变检测（相邻秒差 > 25）
   for (let i = 1; i < records.length; i++) {
@@ -780,6 +882,13 @@ export async function analyzeFile(input, outDir) {
   const hasPower = powers.some((v) => v != null);
   const driftField = hasPower ? "power" : "speed";
 
+  // 主爬升指标：优先用码表自报累计爬升（session.total_ascent，与码表屏幕同口径，
+  // 设备气压计自带滤波校准）；缺失时回退自算值（elevationGain 滞回去抖）
+  const deviceAscentM =
+    sess.total_ascent != null ? Math.round(sess.total_ascent * 1000) : null;
+  const useDeviceAscent = deviceAscentM != null && deviceAscentM > 0;
+  const elevationM = useDeviceAscent ? deviceAscentM : elevationGain(alts);
+
   // ---- 4. 汇总 JSON ----
   const summary = {
     activity: {
@@ -787,7 +896,8 @@ export async function analyzeFile(input, outDir) {
       sport,
       duration_sec: durationSec,
       distance_km: distanceKm,
-      elevation_gain_m: elevationGain(alts),
+      elevation_gain_m: elevationM,
+      elevation_gain_source: useDeviceAscent ? "device" : "computed",
       ...(avgSpeedKmh != null ? { avg_speed_kmh: avgSpeedKmh } : {}),
       ...(totalCalories != null ? { total_calories: totalCalories } : {}),
     },
@@ -835,6 +945,7 @@ export async function analyzeFile(input, outDir) {
         ? { dropped_records_no_timestamp: droppedNoTs }
         : {}),
       ...(missingSec > 0 ? { missing_seconds: missingSec } : {}),
+      ...(pauseSeconds > 0 ? { pause_seconds: pauseSeconds } : {}),
       power_coverage_pct: Math.round(
         (powers.filter((v) => v != null).length / durationSec) * 100,
       ),

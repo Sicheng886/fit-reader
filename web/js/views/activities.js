@@ -335,6 +335,7 @@ function anomaliesHtml(summary) {
     dq.hr_coverage_pct != null ? t("dq.hr", { p: dq.hr_coverage_pct }) : null,
     dq.dropped_records_no_timestamp ? t("dq.dropped", { n: dq.dropped_records_no_timestamp }) : null,
     dq.missing_seconds ? t("dq.missing", { n: dq.missing_seconds }) : null,
+    dq.pause_seconds ? t("dq.paused", { n: dq.pause_seconds }) : null,
   ].filter(Boolean).join(" · ");
   if (!an?.length && !dqText) return "";
   // 异常列表可折叠：超过 5 条默认收起（自动暂停产生的缺失标注可能几十条），点击展开

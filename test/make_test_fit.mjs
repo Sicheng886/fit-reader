@@ -91,7 +91,7 @@ const fitTs = (ms) => Math.round(ms / 1000) - FIT_EPOCH;
 
 // ---------------- 各消息类型的字段定义 ----------------
 
-const LOCAL = { fileId: 0, sport: 1, record: 2, lap: 3, session: 4, length: 5, devId: 6, fieldDesc: 7 };
+const LOCAL = { fileId: 0, sport: 1, record: 2, lap: 3, session: 4, length: 5, devId: 6, fieldDesc: 7, event: 8 };
 
 function fileIdMsgs(startMs) {
   const def = defMsg(LOCAL.fileId, 0, [
@@ -169,7 +169,7 @@ function lapMsg({ startMs, elapsedSec, distanceM, avgPower, avgHr, avgSpeedMS })
   return [def, dat];
 }
 
-function sessionMsg({ startMs, sport, elapsedSec, distanceM, avgHr, poolLengthM, totalCalories, avgSpeedMS }) {
+function sessionMsg({ startMs, sport, elapsedSec, totalTimerSec, totalAscentM, totalDescentM, distanceM, avgHr, poolLengthM, totalCalories, avgSpeedMS }) {
   const def = defMsg(LOCAL.session, 18, [
     { num: 253, size: 4, base: BASE.uint32 }, // timestamp
     { num: 5, size: 1, base: BASE.enum }, // sport
@@ -179,6 +179,9 @@ function sessionMsg({ startMs, sport, elapsedSec, distanceM, avgHr, poolLengthM,
     { num: 44, size: 2, base: BASE.uint16 }, // pool_length (scale 100, m)
     { num: 11, size: 2, base: BASE.uint16 }, // total_calories (kcal)
     { num: 14, size: 2, base: BASE.uint16 }, // avg_speed (scale 1000, m/s)
+    { num: 8, size: 4, base: BASE.uint32 }, // total_timer_time (scale 1000)
+    { num: 22, size: 2, base: BASE.uint16 }, // total_ascent (m)
+    { num: 23, size: 2, base: BASE.uint16 }, // total_descent (m)
   ]);
   const dat = dataMsg(
     LOCAL.session,
@@ -191,9 +194,32 @@ function sessionMsg({ startMs, sport, elapsedSec, distanceM, avgHr, poolLengthM,
       poolLengthM != null ? u16(poolLengthM * 100) : u16(0xffff),
       totalCalories != null ? u16(totalCalories) : u16(0xffff),
       avgSpeedMS != null ? u16(avgSpeedMS * 1000) : u16(0xffff),
+      totalTimerSec != null ? u32(totalTimerSec * 1000) : u32(0xffffffff),
+      totalAscentM != null ? u16(totalAscentM) : u16(0xffff),
+      totalDescentM != null ? u16(totalDescentM) : u16(0xffff),
     ]),
   );
   return [def, dat];
+}
+
+/** event 消息（计时暂停：timer 的 stop_all→start 时间对；event_type 枚举 start=0 / stop_all=4） */
+function eventMsgs(pairs) {
+  // pairs: [{ stopMs, startMs }]
+  const def = defMsg(LOCAL.event, 21, [
+    { num: 253, size: 4, base: BASE.uint32 }, // timestamp
+    { num: 0, size: 1, base: BASE.enum }, // event (0 = timer)
+    { num: 1, size: 1, base: BASE.enum }, // event_type
+  ]);
+  const msgs = [def];
+  for (const p of pairs) {
+    msgs.push(
+      dataMsg(LOCAL.event, Buffer.concat([u32(fitTs(p.stopMs)), u8(0), u8(4)])),
+    );
+    msgs.push(
+      dataMsg(LOCAL.event, Buffer.concat([u32(fitTs(p.startMs)), u8(0), u8(0)])),
+    );
+  }
+  return msgs;
 }
 
 /** 游泳 length 消息（逐趟：时长/划水次数/平均速度） */
@@ -274,6 +300,8 @@ function buildRecords({
   const records = [];
   for (let i = 0; i < durationSec; i++) {
     if (inSpans(i, dropSpans)) continue;
+    const sp = typeof speedMS === "function" ? speedMS(i) : speedMS;
+    const alt = typeof altitude === "function" ? altitude(i) : altitude;
     records.push({
       t: badTimestampOffsets.includes(i) ? null : startMs + i * 1000,
       power:
@@ -290,29 +318,31 @@ function buildRecords({
             ? cadence(i)
             : cadence
           : null,
-      altitude,
-      speed: speedMS,
-      distance: speedMS != null ? Math.round(i * speedMS) : null,
+      altitude: alt,
+      speed: sp,
+      distance: sp != null ? Math.round(i * sp) : null,
       temperature,
     });
   }
   return records;
 }
 
-/** 合成骑行 FIT（30 分钟模拟骑行，可注入功率缺失/记录缺失） */
+/** 合成骑行 FIT（30 分钟模拟骑行，可注入功率缺失/记录缺失/暂停事件/码表自报爬升） */
 export function buildRideFit(opts = {}) {
   const startMs = opts.startMs ?? Date.UTC(2024, 0, 15, 10, 0, 0);
   const durationSec = opts.durationSec ?? 1800;
   const power = opts.power ?? 200;
   const speedMS = opts.speedMS ?? 10;
   const devField = opts.devField ?? null; // { name, value }
+  // speedMS 为函数时 session/lap 的平均速度不写（解析为无效值），走记录兜底口径
+  const speedVal = typeof speedMS === "function" ? null : speedMS;
   const records = buildRecords({
     startMs,
     durationSec,
     power,
     heartRate: opts.heartRate ?? 140,
     cadence: opts.cadence ?? 90,
-    altitude: 100,
+    altitude: opts.altitude ?? 100,
     speedMS,
     temperature: opts.temperature ?? 25,
     powerGap: opts.powerGap,
@@ -327,20 +357,24 @@ export function buildRideFit(opts = {}) {
     ...lapMsg({
       startMs,
       elapsedSec: durationSec,
-      distanceM: durationSec * speedMS,
+      distanceM: speedVal != null ? durationSec * speedVal : null,
       avgPower: power,
       avgHr: 140,
-      avgSpeedMS: speedMS,
+      avgSpeedMS: speedVal,
     }),
     ...sessionMsg({
       startMs,
       sport: ENUM.sport.cycling,
       elapsedSec: durationSec,
-      distanceM: durationSec * speedMS,
+      totalTimerSec: opts.totalTimerSec ?? null,
+      totalAscentM: opts.totalAscentM ?? null,
+      totalDescentM: opts.totalDescentM ?? null,
+      distanceM: speedVal != null ? durationSec * speedVal : null,
       avgHr: 140,
       totalCalories: opts.totalCalories ?? 360,
-      avgSpeedMS: speedMS,
+      avgSpeedMS: speedVal,
     }),
+    ...(opts.pauseEvents ? eventMsgs(opts.pauseEvents) : []),
   ];
   return encodeFit(msgs);
 }

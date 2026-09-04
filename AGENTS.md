@@ -55,7 +55,7 @@ node index.js input/MAGENE_C506SE_2026-07-17_202219_1273797.fit output/
 
 ### 骑手参数与算法阈值
 
-骑手参数（`ftp_watts` / `max_hr` / `weight_kg`）**以训练库为准**：存于 SQLite `settings` 表（key=`athlete`），由 Web 设置页（`POST /api/athlete`）维护；`src/settings.js` 里的 `ATHLETE` 只是出厂默认值（库中无配置时兜底）。`src/db.js` 的 `syncAthleteFromDb()` 把库值原地合并进 `ATHLETE` 导出对象（`analyzeFile()` 开头、`main()` 入口、`server.js` 启动时各调一次），`setAthlete()` 校验后写库并原地生效。功率/心率分区及间歇识别、爬坡提取、踏频分析、数据质量的算法阈值（`POWER_ZONES` / `HR_ZONES` / `INTERVAL_DETECTION` / `CLIMB_DETECTION` / `CADENCE_ANALYSIS` / `DATA_QUALITY` / `PEAK_CURVE`）仍集中在 `src/settings.js`。
+骑手参数（`ftp_watts` / `max_hr` / `weight_kg`）**以训练库为准**：存于 SQLite `settings` 表（key=`athlete`），由 Web 设置页（`POST /api/athlete`）维护；`src/settings.js` 里的 `ATHLETE` 只是出厂默认值（库中无配置时兜底）。`src/db.js` 的 `syncAthleteFromDb()` 把库值原地合并进 `ATHLETE` 导出对象（`analyzeFile()` 开头、`main()` 入口、`server.js` 启动时各调一次），`setAthlete()` 校验后写库并原地生效。功率/心率分区及间歇识别、爬坡提取、踏频分析、数据质量、累计爬升的算法阈值（`POWER_ZONES` / `HR_ZONES` / `INTERVAL_DETECTION` / `CLIMB_DETECTION` / `CADENCE_ANALYSIS` / `DATA_QUALITY` / `ELEVATION` / `PEAK_CURVE`）仍集中在 `src/settings.js`。
 
 ## 代码结构
 
@@ -76,9 +76,9 @@ node index.js input/MAGENE_C506SE_2026-07-17_202219_1273797.fit output/
 
 | 区块 | 内容 |
 |---|---|
-| 工具函数 | `zoneOf` / `zoneDistribution`（区间分布）、`normalizedPower`（30s 滚动平均的四次方均根，缺口窗口不参与）、`peakAvg`（指定时长最大平均功率，要求窗口连续）、`fillShortGaps`（≤阈值短缺口线性插值，峰功率曲线/FTP 估算前预处理）、`hrDriftPct`（前后半程效率因子相对变化，功率或速度口径）、`findPowerGaps`（功率缺失 > 60s 检测）、`findMissingSpans`（整段记录缺失检测）、`collectDeveloperFields`（非标准字段数值统计）、`elevationGain`（带 1m 阈值去抖的累计爬升）、`avgField` / `maxField`（片段统计）。纯函数均 `export`，供单元测试直接引用；`main()` 仅当作为入口脚本运行时执行 |
+| 工具函数 | `zoneOf` / `zoneDistribution`（区间分布）、`normalizedPower`（30s 滚动平均的四次方均根，缺口窗口不参与）、`peakAvg`（指定时长最大平均功率，要求窗口连续）、`fillShortGaps`（≤阈值短缺口线性插值，峰功率曲线/FTP 估算前预处理）、`hrDriftPct`（前后半程效率因子相对变化，功率或速度口径）、`findPowerGaps`（功率缺失 > 60s 检测）、`findMissingSpans`（整段记录缺失检测）、`detectPauseSpans`（计时暂停识别：FIT timer 事件区间 / 设备累计距离冻结 / 恢复侧静止三级判据，阈值见 `DATA_QUALITY`）、`collectDeveloperFields`（非标准字段数值统计）、`elevationGain`（滞回去抖的累计爬升：以最近确认点为基线，累计上升达阈值才计入，亚米级气压抖动不计数）、`avgField` / `maxField`（片段统计）。纯函数均 `export`，供单元测试直接引用；`main()` 仅当作为入口脚本运行时执行 |
 | P0 分析函数 | `estimateFtp`（20min 峰功率 × 0.95 估算 FTP 并给更新建议）、`detectIntervals`（≥105% FTP 过阈段识别 + 间歇组统计）、`detectClimbs`（30s 窗口坡度 ≥3% 的爬坡段提取）、`cadencePowerAnalysis`（发力时段踏频习惯与踏频-功率相关性） |
-| 单文件流程 `analyzeFile()` | ① 解析 FIT（`force: true`, `km/h`, `km`, `mode: "list"`；注意解析器会把海拔/爬升缩放成 km，代码统一换回米）→ ② 按秒重采样记录（缺口置 `null`，统计无时间戳丢弃数/缺失秒数）→ ③ 写 CSV → ④ 计算指标（含 P0 分析；跑步附加配速段、游泳解析 length 消息、无功率数据时省略 power 段并切换心率漂移为速度口径；**anomalies 输出为结构化对象**、踏频发力习惯输出 `style` 枚举）→ ⑤ 训练库入库 + `athlete_context` 注入当日 CTL/ATL/TSB 与 `form_state`（失败仅警告不中断）→ ⑥ 写 summary JSON，返回结果 |
+| 单文件流程 `analyzeFile()` | ① 解析 FIT（`force: true`, `km/h`, `km`, `mode: "list"`；注意解析器会把海拔/爬升缩放成 km，代码统一换回米）→ ② 按秒重采样记录（缺口置 `null`，统计无时间戳丢弃数/缺失秒数；间隙经 `detectPauseSpans` 分类为计时暂停或数据缺失，暂停不计入时长/缺失）→ ③ 写 CSV → ④ 计算指标（含 P0 分析；跑步附加配速段、游泳解析 length 消息、无功率数据时省略 power 段并切换心率漂移为速度口径；**anomalies 输出为结构化对象**、踏频发力习惯输出 `style` 枚举）→ ⑤ 训练库入库 + `athlete_context` 注入当日 CTL/ATL/TSB 与 `form_state`（失败仅警告不中断）→ ⑥ 写 summary JSON，返回结果 |
 | 查询命令 | `printMonthly()`（逐月汇总表）、`writeTrendHtml()`（自包含 HTML 趋势图：月 TSS 柱 + CTL/ATL/TSB 月末折线 + 指标解读脚注，原生 SVG 无外部库） |
 | 提示词命令（P2） | `emitPrompt()`（打印 stdout + 可选写 .md）、`loadSummaryJson()`、`emitPlanPrompt()` / `emitTaperPrompt()`（从训练库取数并调 src/prompts.js 组装）、`cliLang()` / `cliArgv()`（`--lang en` 解析：剔除标志后取位置参数，缺省读训练库 lang 再缺省 zh） |
 | 入口 `main()` | `--monthly` / `--trend` → 训练库查询；`--review` / `--plan` / `--taper` / `--compare` → 提示词生成（可带 `--lang en`）；输入是目录 → 批量模式（逐文件调用 `analyzeFile`，失败不中断）；输入是文件 → 单文件模式并打印 JSON 全文 |
@@ -88,7 +88,7 @@ node index.js input/MAGENE_C506SE_2026-07-17_202219_1273797.fit output/
 ## 版本控制约定（重要）
 
 - 项目使用 **git** 进行版本控制。**每次完成修改后（无论是代码、配置还是文档变更）都必须先提升 `package.json` 中的 `version` 字段，再执行 `git commit`**，并附上清晰描述本次变更内容的中文 commit message。
-- 当前版本：`1.8.0`。版本号遵循语义化版本（SemVer）：`MAJOR.MINOR.PATCH`，bug 修复/小调整升 PATCH，新增功能升 MINOR，破坏性改动升 MAJOR。
+- 当前版本：`1.9.0`。版本号遵循语义化版本（SemVer）：`MAJOR.MINOR.PATCH`，bug 修复/小调整升 PATCH，新增功能升 MINOR，破坏性改动升 MAJOR。
 - 推荐工作流：
   1. 完成修改并跑通 `npm test`。
   2. 运行 `npm version patch|minor|major --no-git-tag-version`（仅修改 `package.json` 与 `package-lock.json`，不自动提交、不打 tag）。
@@ -110,20 +110,23 @@ node index.js input/MAGENE_C506SE_2026-07-17_202219_1273797.fit output/
 
 summary.json 字段（喂 AI 的汇总结构，records.csv 列见上文「项目概览」）：
 
-- `activity`：日期、运动类型（cycling/running/swimming）、时长、距离、爬升、平均速度、卡路里
+- `activity`：日期、运动类型（cycling/running/swimming）、时长（剔除计时暂停，只含实际计时骑行时间）、距离、爬升（优先用码表自报 `session.total_ascent`，缺失时自算；附 `elevation_gain_source: 'device'|'computed'` 标明口径）、平均速度、卡路里
 - `athlete_context`：骑手参数 + 当日 CTL/ATL/TSB + `form_state` 枚举（fresh/good/balanced/fatigued/overtrained，语言中立）与 `form_note` 简评（分析时语言，界面按 form_state 重新本地化）
 - `power`：平均/NP/最大功率、VI、IF、TSS、功体比、峰功率曲线（5s/1min/5min/20min）、FTP 自动估算、Coggan 7 区时间分布
 - `heart_rate`：平均/最大心率、5 区时间分布、心率漂移（有氧解耦 %）
 - `cadence`：平均踏频（剔除 0 rpm 滑行秒，只统计踩踏时段，与码表 session / Strava 口径一致；跑步为步频 spm）
 - `temperature`（avg/min/max）/ `pace`（仅跑步：配速 min/km）/ `swim`（仅游泳：趟数/泳池长度/划水/SWOLF）/ `developer_fields`（非标准字段数值统计）
-- `cadence_power`（踏频-功率联合分析，发力习惯为 `style` 枚举 normal/low_cadence/high_cadence，界面/AI 按语言渲染）、`climbs`（爬坡段）、`interval_set`（间歇组）、`segments`（圈/赛段 + 间歇工作段）、`anomalies`（设备异常标注，**结构化对象**：`{type: 'power_gap'|'record_gap'|'hr_jump', duration_sec?, from?, to?, at}`——语言中立，展示时经 src/i18n.js `formatAnomaly()` 按语言渲染，旧库字符串格式原样透传）、`data_quality`（覆盖率/丢弃数/缺失秒数）
+- `cadence_power`（踏频-功率联合分析，发力习惯为 `style` 枚举 normal/low_cadence/high_cadence，界面/AI 按语言渲染）、`climbs`（爬坡段）、`interval_set`（间歇组）、`segments`（圈/赛段 + 间歇工作段）、`anomalies`（设备异常标注，**结构化对象**：`{type: 'power_gap'|'record_gap'|'timer_pause'|'hr_jump', duration_sec?, from?, to?, at}`——语言中立，展示时经 src/i18n.js `formatAnomaly()` 按语言渲染，旧库字符串格式原样透传）、`data_quality`（覆盖率/丢弃数/缺失秒数（不含暂停）/暂停秒数 `pause_seconds`）
 
 指标算法口径：
 
 - NP：30s 滚动平均 → 四次方均值 → 开四次方根（缺口窗口不参与）；IF = NP / FTP；TSS = 时长秒 × NP × IF / (FTP × 3600) × 100
 - 心率漂移（有氧解耦）：前后半程效率因子的相对变化；骑行用功率/心率，无功率数据时自动切换速度/心率
 - CTL = TSS 的 42 天指数加权（体能）；ATL = 7 天（疲劳）；TSB = CTL − ATL（状态）；缺天按 TSS=0 参与衰减
-- 峰功率曲线要求窗口数据连续，但允许 ≤10s 的短缺口先线性插值补齐再取峰（容忍功率计偶发掉秒，阈值见 src/settings.js `PEAK_CURVE.max_interp_gap_sec`；NP/分区/TSS 仍用原始序列）；异常检测：功率缺失 >60s、整段记录缺失 ≥10s、心率跳变（相邻秒差 >25）
+- 峰功率曲线要求窗口数据连续，但允许 ≤10s 的短缺口先线性插值补齐再取峰（容忍功率计偶发掉秒，阈值见 src/settings.js `PEAK_CURVE.max_interp_gap_sec`；NP/分区/TSS 仍用原始序列）
+- 累计爬升：优先采用码表自报 `session.total_ascent`（与码表屏幕同口径，设备气压计自带滤波校准）；缺失时自算——滞回去抖（以最近确认点为基线，累计上升 ≥ `ELEVATION.noise_threshold_m` 才计入并抬升基线，期间跌破基线则下跟新低，亚米级气压抖动不计数）；record 海拔缺失时回退 `enhanced_altitude`
+- 计时暂停识别：码表暂停/自动暂停期间不写记录，网格上表现为整段空缺；按三级判据归类（FIT timer `stop_all`→`start` 事件区间相交 > 设备累计距离在空缺两侧冻结（跳变 ≤ `DATA_QUALITY.pause_dist_jump_m`，骑行中掉数据距离会按速度继续跳变）> 恢复侧静止（恢复后窗口内最大速度 < `pause_resume_speed_kmh`）），命中标 `timer_pause` 且不计入时长/TSS/平均速度/缺失秒数；未命中的空缺仍标 `record_gap`/`power_gap`（与暂停区间重叠的功率缺失不算异常）
+- 异常检测：功率缺失 >60s、整段记录缺失 ≥10s、心率跳变（相邻秒差 >25）
 - FTP 自动估算：20min 峰功率 × 0.95（无连续 20min 窗口时省略）
 - 间歇识别：≥105% FTP 过阈段，≤10s 瞬时掉功率合并、<30s 丢弃；爬坡段：30s 窗口坡度 ≥3% 且爬升 ≥15m、长度 ≥300m；踏频-功率联合分析：仅统计 ≥75% FTP 发力时段，低踏频 <80rpm / 高踏频 >90rpm
 - 月度强度分布：低(Z1–Z2)/中(Z3–Z4)/高(Z5–Z7) 按时长加权；低≥75% 且高>中 → polarized，低>中>高 → pyramidal，其余 → sweet_spot
@@ -147,7 +150,7 @@ summary.json 字段（喂 AI 的汇总结构，records.csv 列见上文「项目
 - `test/unit.test.mjs`：指标算法纯函数单测（NP/peakAvg/分区/爬升去抖/间歇识别/心率漂移/FTP 估算/缺失检测/开发者字段 + src/ftp.js 历史估算：CP 模型/数据充分性/心率交叉验证各分支 + src/prompts.js 提示词数据压缩与当前日期时间段（buildDateSection 固定时刻断言） + src/planning.js：simulateForm 衰减/收敛/两类风险触发与不触发、generateWorkout 五种模板结构/瓦数换算/TSS 口径/时长不足报错/TSB 降级）。
 - `test/skills.test.mjs`：src/skills.js 技能文档加载——临时目录 + `FIT_SKILLS_DIR` 隔离（loadSkills 每次调用实时读环境变量，无需 import 前设置），覆盖排序/`_` 前缀与非 .md 跳过/标题提取与文件名兜底/目录不存在/拼装格式/实时生效/内置五技能冒烟/**`.en.md` 按语言加载与 Knowledge Base 段**。
 - `test/ai.test.mjs`：src/ai.js HTTP 层回归——本地 mock chat/completions 服务，验证慢响应不被隐藏超时掐断、总超时报错、SSE 流式拼接、HTTP 错误状态透出。
-- `test/e2e.test.mjs`：端到端回归——合成 FIT → `analyzeFile` → 校验 CSV 行数与 summary 指标（anomalies 结构化断言 + formatAnomaly 中/英渲染口径）；训练库通过 `FIT_DB_PATH` 指向临时目录与真实库隔离（**必须在 import index.js 之前设置该环境变量**，src/db.js 在模块加载时定路径）。
+- `test/e2e.test.mjs`：端到端回归——合成 FIT → `analyzeFile` → 校验 CSV 行数与 summary 指标（anomalies 结构化断言 + formatAnomaly 中/英渲染口径 + 暂停识别/时长与 TSS 剔除暂停/码表自报爬升优先）；训练库通过 `FIT_DB_PATH` 指向临时目录与真实库隔离（**必须在 import index.js 之前设置该环境变量**，src/db.js 在模块加载时定路径）。
 - `test/web.test.mjs`：Web 服务端到端——合成 FIT → `POST /api/upload` → 校验概览/详情/时序/AI 提示词接口（含专业知识库段注入断言）与路径穿越防护；同时直接调用 `saveAiReport` / `listAiReports` / `getAiReport` 验证 AI 缓存表 30 条滚动限制；FTP 接口用 `upsertActivity` 注入合成骑行校验 `/api/ftp-estimate`，并校验 `/api/ftp-apply` 与 `GET/POST /api/athlete`（写训练库 settings 表、部分更新、非法值 400）；训练备注（`/api/activity/note` 保存/合并进 summary/进入复盘提示词/清除与长度校验）与用户背景目标（`/api/profile` 部分更新、清空、进入复盘与规划提示词）亦有端到端覆盖；**语言机制**（`GET/POST /api/lang` 存取与非法值 400、库中 lang=en 时提示词/技能/错误消息整体英文、请求体 lang 覆盖库值、记忆段与工具指引段按语言输出、详情接口按 X-Lang 头本地化 form_note）；AI 对话（`POST/GET/DELETE /api/ai/chat(s)`：202 异步状态机轮询、系统段与历史消息口径、report_id 找回追问对话、级联删除、每 mode 50 个滚动清理、旧 follow-up 接口 404）与 AI 记忆（saveMemory 校验/取代链/100 条滚动清理、mock AI 触发 save_memory 入库带 source、memories 接口与删除 404、报告提示词含记忆段）与 simulate_form 负荷推演（mock AI 首轮 tool_calls、projection/end_form/risk_flags 回填、工具定义随请求下发、回答落库）以 mock AI 服务端到端覆盖；同样用 `FIT_DB_PATH` / `FIT_OUTPUT_DIR` / `FIT_INPUT_DIR` 指向临时目录隔离（须在 import server.js 前设置），收尾先 `closeDb()` 释放 SQLite 句柄再删临时目录（Windows 文件锁）。
 
 修改指标算法后：① 跑 `npm test`；② 用 `input/` 下的真实 FIT 文件重跑批量分析做端到端验证；涉及训练库的改动还需验证 `--monthly` / `--trend` 与删库自动重建（`rm -rf db` 后重跑分析）。
@@ -158,7 +161,7 @@ summary.json 字段（喂 AI 的汇总结构，records.csv 列见上文「项目
 - **海拔单位隐藏 bug 已修复**（P3 过程中发现）：解析器按 `lengthUnit: "km"` 会把海拔/爬升缩放成 km，此前海拔输出与爬坡检测被压低 1000 倍（MAGENE 海拔恒 0 故从未暴露），现已统一换回米。
 - 没有 CI、没有部署流程——这是一个纯本地脚本项目（git 仅用于本地版本控制）。
 - 项目源码统一使用 ESM（`.js` + `"type": "module"`），`fit-file-parser` 为 CommonJS 包，通过默认导入（`import FitParser from "fit-file-parser"`）由 Node 的 CJS-ESM 互操作处理。
-- FIT 解析已开启 `force: true` 容忍损坏文件；被跳过的记录通过 `data_quality`（无时间戳丢弃数、时间跨度内缺失秒数）与 `anomalies`（≥10s 整段缺失标注，阈值见 src/settings.js `DATA_QUALITY.record_gap_sec`）体现。
+- FIT 解析已开启 `force: true` 容忍损坏文件；被跳过的记录通过 `data_quality`（无时间戳丢弃数、时间跨度内缺失秒数——不含计时暂停、暂停秒数单列）与 `anomalies`（≥10s 整段空缺标注：计时暂停 `timer_pause` / 数据缺失 `record_gap`，阈值见 src/settings.js `DATA_QUALITY`）体现。
 - 已支持骑行/跑步/游泳三类：骑行指标最全；跑步为配速/步频/心率体系（无功率段）；游泳为 length 消息统计（趟数/泳池长度/划水/SWOLF）+ 心率。更细的运动类型适配（如公开水域游泳、铁人三项拼接）未做。
 
 ## 安全考虑

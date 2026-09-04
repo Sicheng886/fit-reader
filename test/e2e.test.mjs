@@ -122,6 +122,90 @@ test("损坏兜底：整段记录缺失 + 无时间戳坏记录被计数标注",
   assert.ok(summary.anomalies.some((a) => formatAnomaly(a, "zh").includes("记录缺失 45s")));
 });
 
+test("暂停识别：停车暂停计时不标数据缺失，时长/TSS 剔除暂停", async () => {
+  // 前 600s 骑行（10 m/s），600-960s 暂停码表（无记录），恢复后先静止 5s 再继续骑
+  const fit = writeFit(
+    "paused.fit",
+    gen.buildRideFit({
+      dropSpans: [[600, 360]],
+      speedMS: (i) => (i < 600 || i >= 965 ? 10 : 0),
+    }),
+  );
+  const { summary } = await analyzeFile(fit, outDir);
+
+  // 恢复侧静止 → 判为计时暂停，不产生 record_gap / power_gap
+  assert.ok(
+    summary.anomalies.some(
+      (a) => a.type === "timer_pause" && a.duration_sec === 360,
+    ),
+  );
+  assert.ok(!summary.anomalies.some((a) => a.type === "record_gap"));
+  assert.ok(!summary.anomalies.some((a) => a.type === "power_gap"));
+  assert.ok(
+    summary.anomalies.some((a) => formatAnomaly(a, "zh").includes("计时暂停 360s")),
+  );
+  assert.ok(
+    summary.anomalies.some((a) => formatAnomaly(a, "en").includes("Timer paused 360s")),
+  );
+
+  // 缺失秒数剔除暂停（暂停秒数单列）；时长/TSS 只按计时时间计算
+  assert.equal(summary.data_quality.missing_seconds, undefined);
+  assert.equal(summary.data_quality.pause_seconds, 360);
+  assert.equal(summary.activity.duration_sec, 1440);
+  const ftp = ATHLETE.ftp_watts;
+  const expectedIF = Math.round((200 / ftp) * 100) / 100;
+  assert.equal(
+    summary.power.tss,
+    Math.round(((1440 * 200 * expectedIF) / (ftp * 3600)) * 100),
+  );
+});
+
+test("事件暂停：FIT timer stop_all→start 事件识别暂停，启发法兜底", async () => {
+  // 600-960s 无记录且恢复时直接骑行（启发法不命中），但设备写了暂停事件
+  const startMs = Date.UTC(2024, 0, 15, 10, 0, 0);
+  const fit = writeFit(
+    "paused_event.fit",
+    gen.buildRideFit({
+      dropSpans: [[600, 360]],
+      pauseEvents: [
+        { stopMs: startMs + 601 * 1000, startMs: startMs + 959 * 1000 },
+      ],
+    }),
+  );
+  const { summary } = await analyzeFile(fit, outDir);
+  assert.ok(
+    summary.anomalies.some(
+      (a) => a.type === "timer_pause" && a.duration_sec === 360,
+    ),
+  );
+  assert.ok(!summary.anomalies.some((a) => a.type === "record_gap"));
+  assert.equal(summary.data_quality.pause_seconds, 360);
+  assert.equal(summary.activity.duration_sec, 1440);
+});
+
+test("累计爬升：优先采用码表自报 total_ascent，缺失时回退自算", async () => {
+  const fit = writeFit("ascent.fit", gen.buildRideFit({ totalAscentM: 82 }));
+  const { summary } = await analyzeFile(fit, outDir);
+  assert.equal(summary.activity.elevation_gain_m, 82);
+  assert.equal(summary.activity.elevation_gain_source, "device");
+
+  // 无设备值：恒定海拔自算为 0
+  const fit2 = writeFit("ascent_flat.fit", gen.buildRideFit());
+  const { summary: s2 } = await analyzeFile(fit2, outDir);
+  assert.equal(s2.activity.elevation_gain_m, 0);
+  assert.equal(s2.activity.elevation_gain_source, "computed");
+
+  // 无设备值：匀坡自算。步长 0.2m/秒与 FIT 海拔字段 0.2m 量化（scale 5）对齐，
+  // 500s × 0.2m = 100m 整数坡，去抖每满 1m 确认一次，恰得 100m
+  const fit3 = writeFit(
+    "ascent_ramp.fit",
+    gen.buildRideFit({ durationSec: 501, altitude: (i) => 100 + i * 0.2 }),
+  );
+  const { summary: s3 } = await analyzeFile(fit3, outDir);
+  assert.equal(s3.activity.elevation_gain_m, 100);
+  assert.equal(s3.activity.elevation_gain_source, "computed");
+});
+
 test("跑步：配速/步频指标，无功率段，心率漂移走速度口径", async () => {
   const fit = writeFit("run.fit", gen.buildRunFit());
   const { summary } = await analyzeFile(fit, outDir);
