@@ -41,7 +41,7 @@ const TEXT = {
 
     "sec.now": `## 当前时间`,
     "sec.now.line": `今天是 {date}（{weekday}），当前时刻 {time}（UTC{offset}）。`,
-    "sec.now.utc_note": `训练库中的训练日期为 UTC 口径，可能与本地日历相差一天；涉及「今天/本周/下周」等表述时，以本段日期为准。`,
+    "sec.now.utc_note": `训练数据中的日期时间已按本地时区（UTC{offset}）标注，请直接按本地时间解读（如 19:51 即傍晚），不要再做时区换算；仅纯日期字段（activity.date 与训练库日期）为 UTC 口径，清晨训练可能显示为前一天。涉及「今天/本周/下周」等表述时，以本段日期为准。`,
 
     "agentic.head": `## 数据查询与计算工具`,
     "agentic.rules_head": `使用规则：`,
@@ -156,7 +156,7 @@ You are a rigorous, pragmatic cycling coach, well-versed in the Coggan power tra
 
     "sec.now": `## Current Date & Time`,
     "sec.now.line": `Today is {weekday}, {date}; local time {time} (UTC{offset}).`,
-    "sec.now.utc_note": `Activity dates in the training library are UTC-based and may differ from the local calendar by one day; treat the date above as the baseline for "today / this week / next week".`,
+    "sec.now.utc_note": `Date-times in the training data are already labelled in local time (UTC{offset}) — read them as local wall-clock (e.g. 19:51 is evening) and do not shift them again. Only plain date fields (activity.date and training-library dates) stay UTC-based, so early-morning sessions may show the previous day. Treat the date above as the baseline for "today / this week / next week".`,
 
     "agentic.head": `## Data Query & Computation Tools`,
     "agentic.rules_head": `Rules:`,
@@ -309,6 +309,7 @@ export function buildDateSection(now, lang = "zh") {
   if (now == null) return null;
   const d = dayjs(now).locale(lang === "en" ? "en" : "zh-cn");
   if (!d.isValid()) return null;
+  const offset = d.format("Z");
   return [
     TT(lang, "sec.now"),
     "",
@@ -316,9 +317,9 @@ export function buildDateSection(now, lang = "zh") {
       date: d.format("YYYY-MM-DD"),
       weekday: d.format("dddd"),
       time: d.format("HH:mm"),
-      offset: d.format("Z"),
+      offset,
     }),
-    TT(lang, "sec.now.utc_note"),
+    TT(lang, "sec.now.utc_note", { offset }),
   ].join("\n");
 }
 
@@ -422,10 +423,43 @@ export function buildProfileSection(profile, lang = "zh") {
   return `${TT(lang, "profile.head")}\n\n${lines.join("\n")}\n\n${TT(lang, "profile.tail")}`;
 }
 
-// ---------------- 提交前数据压缩 ----------------
+// ---------------- 提交前数据整形 ----------------
 // summary.json 本身是聚合指标，体积基本与时长无关；但 anomalies（每段缺失一行）
 // 与 segments（自动圈）两个列表会随时长线性增长。发送给 AI 前先把它们压缩成
 // 聚合统计/首尾取样，保证提示词长度与训练时长无关（纯函数，不改原对象）。
+
+/** ISO-8601 UTC 时间戳（带 Z 后缀、含可选毫秒） */
+const ISO_UTC_RE = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z/g;
+/** 用户自填内容字段：原样透传，其中的时间戳不改写 */
+const USER_TEXT_KEYS = new Set(["note", "identity", "goal", "content", "title"]);
+
+/**
+ * 把数据中的 ISO-8601 UTC 时间戳改写为带本地时区偏移的等价表示。
+ * 训练数据的时间戳一律是 UTC 口径（records/segments/climbs/anomalies 均为
+ * ISO 的 Z 形式），直接喂给 AI 会被按字面当成本地时间读——本地 19:51 的骑行
+ * 在数据里是 11:51Z，AI 会理解成上午。改写后（2026-03-25T11:51:24.000Z →
+ * 2026-03-25T19:51:24+08:00）时刻不变、语言中立，AI 无需自行逐条换算，
+ * 也不会在跨日时算错。偏移取该时刻实际生效的本地偏移（夏令时按时刻判定）。
+ * 纯日期字段（activity.date、训练库日期）保持 UTC 口径不动——它们与界面显示、
+ * 训练库查询一致，单独换算会与之矛盾；用户自填内容（备注/身份/目标）不改写。
+ * 返回新对象，入参不被修改（与 compactSummaryForPrompt 同一约定）。
+ */
+export function localizeTimestamps(value, key = "") {
+  if (typeof value === "string") {
+    if (USER_TEXT_KEYS.has(key)) return value;
+    return value.replace(ISO_UTC_RE, (m) => {
+      const d = dayjs(m);
+      return d.isValid() ? d.format("YYYY-MM-DDTHH:mm:ssZ") : m;
+    });
+  }
+  if (Array.isArray(value)) return value.map((v) => localizeTimestamps(v, key));
+  if (value && typeof value === "object") {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) out[k] = localizeTimestamps(v, k);
+    return out;
+  }
+  return value;
+}
 
 /** 原始 anomalies 条数超过该值时聚合为 anomalies_summary */
 const ANOMALY_RAW_MAX = 5;
@@ -476,6 +510,8 @@ function aggregateAnomalies(anomalies) {
  * - anomalies 超过 ANOMALY_RAW_MAX 条 → 替换为 anomalies_summary 聚合统计；
  * - segments 超过 SEGMENTS_MAX 段 → 保留首尾，中间省略（首尾对比仍可看出衰减）；
  * - climbs 超过 CLIMBS_MAX 段 → 只保留爬升最大的段。
+ * 最后统一经 localizeTimestamps 把 UTC 时间戳改写为本地时区偏移表示
+ * （见该函数说明），保证 AI 按本地时间解读训练时段。
  */
 export function compactSummaryForPrompt(summary, lang = "zh") {
   if (!summary || typeof summary !== "object") return summary;
@@ -497,7 +533,7 @@ export function compactSummaryForPrompt(summary, lang = "zh") {
       .sort((a, b) => (b.elevation_gain_m ?? 0) - (a.elevation_gain_m ?? 0))
       .slice(0, CLIMBS_MAX);
   }
-  return out;
+  return localizeTimestamps(out);
 }
 
 // ---------------- 场景模板 ----------------

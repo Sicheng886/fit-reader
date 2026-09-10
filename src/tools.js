@@ -28,7 +28,7 @@ import {
   computeForm,
   saveMemory,
 } from "./db.js";
-import { compactSummaryForPrompt } from "./prompts.js";
+import { compactSummaryForPrompt, localizeTimestamps } from "./prompts.js";
 import { loadRecords, safeName } from "./records.js";
 import { estimateFtpFromHistory } from "./ftp.js";
 import { simulateForm, generateWorkout } from "./planning.js";
@@ -351,7 +351,8 @@ function toolGetActivityRecords(args, ctx) {
     endSec: args?.end_sec != null ? Number(args.end_sec) : undefined,
   });
   if (!data) return errResult(t(lang, "tool.records_not_found", { name }));
-  return toResult(data, lang);
+  // 时序时间戳为 UTC 口径，提交前改写为本地时区偏移，AI 按本地时间解读时段
+  return toResult(localizeTimestamps(data), lang);
 }
 
 function toolGetFormSeries(args, ctx) {

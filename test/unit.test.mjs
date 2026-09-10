@@ -23,6 +23,7 @@ import {
 import { estimateFtpFromHistory } from "../src/ftp.js";
 import {
   compactSummaryForPrompt,
+  localizeTimestamps,
   buildDateSection,
   buildReviewPrompt,
 } from "../src/prompts.js";
@@ -353,11 +354,21 @@ test("estimateFtpFromHistory: 缺 5min 峰功率时 CP 模型退化，仅用 Cog
 
 // ---------------- prompts.js 提交前数据压缩 ----------------
 
-test("compactSummaryForPrompt: 少量 anomalies 时保持原样", () => {
-  const s = { anomalies: ["记录缺失 25s，起始 2026-07-24T13:54:16.000Z"] };
-  const out = compactSummaryForPrompt(s);
-  assert.deepEqual(out.anomalies, s.anomalies);
+/**
+ * 取出字符串中的 ISO 时间戳并返回其绝对时刻（毫秒）。
+ * 本地时区偏移随机器而变，断言一律用「时刻不变」而非字面量，保证时区无关。
+ */
+const instantOf = (v) => {
+  const m = /(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2}))/.exec(String(v));
+  return m ? Date.parse(m[1]) : NaN;
+};
+
+test("compactSummaryForPrompt: 少量 anomalies 保留原文，仅时间戳改写为本地偏移", () => {
+  const out = compactSummaryForPrompt({ anomalies: ["记录缺失 25s，起始 2026-07-24T13:54:16.000Z"] });
+  assert.equal(out.anomalies.length, 1);
   assert.equal(out.anomalies_summary, undefined);
+  assert.match(out.anomalies[0], /^记录缺失 25s，起始 \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$/);
+  assert.equal(instantOf(out.anomalies[0]), Date.parse("2026-07-24T13:54:16.000Z"));
 });
 
 test("compactSummaryForPrompt: 大量 anomalies 聚合为按类型统计", () => {
@@ -372,13 +383,13 @@ test("compactSummaryForPrompt: 大量 anomalies 聚合为按类型统计", () =>
   const out = compactSummaryForPrompt({ anomalies });
   assert.equal(out.anomalies, undefined);
   const byType = Object.fromEntries(out.anomalies_summary.map((g) => [g.type, g]));
-  assert.deepEqual(byType["功率缺失"], {
-    type: "功率缺失",
-    count: 2,
-    first_at: "2026-07-24T13:43:40.000Z",
-    total_sec: 143,
-    max_sec: 78,
-  });
+  const pwr = byType["功率缺失"];
+  assert.equal(pwr.type, "功率缺失");
+  assert.equal(pwr.count, 2);
+  assert.equal(pwr.total_sec, 143);
+  assert.equal(pwr.max_sec, 78);
+  // first_at 已改写为本地偏移，但仍是同一时刻（时区无关断言）
+  assert.equal(instantOf(pwr.first_at), Date.parse("2026-07-24T13:43:40.000Z"));
   assert.equal(byType["记录缺失"].count, 3);
   assert.equal(byType["记录缺失"].total_sec, 81);
   assert.equal(byType["心率跳变"].count, 1);
@@ -436,6 +447,62 @@ test("buildReviewPrompt: 经 assemble 自动带上当前时间段，位于口径
   const en = buildReviewPrompt(summary, undefined, undefined, "en", FIXED_NOW);
   assert.match(en, /## Current Date & Time/);
   assert.match(en, /Thursday/);
+});
+
+// ---------------- prompts.js 时间戳本地化（UTC → 本地时区偏移） ----------------
+
+test("localizeTimestamps: UTC 时间戳改写为本地偏移且时刻不变", () => {
+  // 本地 19:51 的骑行在数据里是 11:51Z——改写后 AI 直接读到傍晚，无需自行换算
+  const out = localizeTimestamps({ at: "2026-03-25T11:51:24.000Z" });
+  assert.match(out.at, /^2026-03-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$/);
+  assert.equal(instantOf(out.at), Date.parse("2026-03-25T11:51:24.000Z"));
+});
+
+test("localizeTimestamps: 递归处理嵌套对象与数组内的结构化时间戳", () => {
+  const out = localizeTimestamps({
+    climbs: [{ start: "2026-05-24T06:05:32.000Z", duration_sec: 120 }],
+    segments: [{ name: "lap_1", duration_sec: 1061 }],
+    power: { np: 180 },
+  });
+  assert.equal(instantOf(out.climbs[0].start), Date.parse("2026-05-24T06:05:32.000Z"));
+  assert.equal(out.climbs[0].duration_sec, 120); // 数值字段不受影响
+  assert.equal(out.segments[0].name, "lap_1");
+  assert.equal(out.power.np, 180);
+});
+
+test("localizeTimestamps: 纯日期字段与用户自填内容不改写", () => {
+  const out = localizeTimestamps({
+    activity: {
+      date: "2026-03-25", // 训练库/界面同口径的纯日期，保持 UTC 基准
+      note: "19:51 出发，中途码表断电，日志里写着 2026-03-25T11:51:24.000Z 那段",
+    },
+    identity: "上班族，2026-03-25T11:51:24.000Z 前完成训练",
+  });
+  assert.equal(out.activity.date, "2026-03-25");
+  assert.match(out.activity.note, /2026-03-25T11:51:24\.000Z/, "用户备注原文不改写");
+  assert.match(out.identity, /2026-03-25T11:51:24\.000Z/, "用户身份原文不改写");
+});
+
+test("localizeTimestamps: 不修改入参，缺失值安全", () => {
+  const src = { climbs: [{ start: "2026-05-24T06:05:32.000Z" }] };
+  localizeTimestamps(src);
+  assert.equal(src.climbs[0].start, "2026-05-24T06:05:32.000Z");
+  assert.equal(localizeTimestamps(null), null);
+  assert.equal(localizeTimestamps("没有时间戳"), "没有时间戳");
+  assert.equal(localizeTimestamps(42), 42);
+});
+
+test("buildReviewPrompt: 训练时间戳按本地时区呈现（傍晚骑行不再被读成中午）", () => {
+  const summary = {
+    activity: { date: "2026-03-25", category: "training" },
+    anomalies: [{ type: "record_gap", duration_sec: 23, at: "2026-03-25T11:51:24.000Z" }],
+  };
+  const out = buildReviewPrompt(summary, undefined, undefined, "zh", FIXED_NOW);
+  const m = /"at": "([^"]+)"/.exec(out);
+  assert.ok(m, "复盘提示词应包含 anomalies 的 at 时间戳");
+  assert.match(m[1], /^2026-03-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$/);
+  assert.equal(Date.parse(m[1]), Date.parse("2026-03-25T11:51:24.000Z"), "时刻不变");
+  assert.doesNotMatch(out, /2026-03-25T11:51:24\.000Z/, "不应再出现裸 UTC 时间戳");
 });
 
 // ============ src/planning.js：未来负荷推演 + 课表生成 ============
